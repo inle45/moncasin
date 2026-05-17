@@ -12,3 +12,6 @@ export const CRASH_HOUSE_EDGE = 0.04;
 export const CRASH_MAX_MULTIPLIER = 500;
 
 export const CRASH_HISTORY_SIZE = 12;
+
+/** Durée stricte de la phase de mises (secondes). */
+export const CRASH_BETTING_SECONDS = 5;

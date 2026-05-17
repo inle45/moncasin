@@ -4,7 +4,7 @@ export interface CrashPublicState {
   round_id: string;
   round_number: number;
   phase: CrashPhase;
-  betting_ends_at: string;
+  betting_ends_at: string | null;
   flying_started_at: string | null;
   crashed_at: string | null;
   crash_point: number | null;

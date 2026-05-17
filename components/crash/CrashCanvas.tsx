@@ -11,7 +11,7 @@ interface CrashCanvasProps {
   crashPoint: number | null;
   curvePoints: number[];
   history: number[];
-  bettingSecondsLeft: number;
+  bettingSecondsLeft: number | null;
   roundNumber: number;
 }
 
@@ -154,10 +154,12 @@ export function CrashCanvas({
           {isBetting ? (
             <>
               <p className="font-display text-6xl font-black tabular-nums text-casino-gold-neon">
-                {bettingSecondsLeft}
+                {bettingSecondsLeft === null ? "—" : bettingSecondsLeft}
               </p>
               <p className="mt-1 text-xs uppercase tracking-widest text-white/40">
-                secondes pour miser
+                {bettingSecondsLeft === null
+                  ? "synchronisation de la manche…"
+                  : "secondes pour miser"}
               </p>
             </>
           ) : (

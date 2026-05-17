@@ -40,9 +40,20 @@ create table if not exists public.crash_round_history (
   created_at timestamptz not null default now()
 );
 
-insert into public.crash_live_state (id)
-values (1)
-on conflict (id) do nothing;
+insert into public.crash_live_state (id, betting_ends_at, crash_point)
+values (1, now() + interval '5 seconds', 2.00)
+on conflict (id) do update
+set
+  betting_ends_at = coalesce(
+    public.crash_live_state.betting_ends_at,
+    excluded.betting_ends_at
+  ),
+  crash_point = case
+    when public.crash_live_state.crash_point is null
+      or public.crash_live_state.crash_point < 1.01
+    then excluded.crash_point
+    else public.crash_live_state.crash_point
+  end;
 
 -- =============================================================================
 -- Helpers
@@ -70,6 +81,68 @@ as $$
 $$;
 
 -- =============================================================================
+-- Réparation automatique (dates NULL, phase invalide)
+-- =============================================================================
+
+create or replace function public.crash_repair_live_state()
+returns void
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  s public.crash_live_state%rowtype;
+begin
+  insert into public.crash_live_state (id, betting_ends_at, crash_point)
+  values (1, now() + interval '5 seconds', public.crash_random_point())
+  on conflict (id) do nothing;
+
+  select * into s from public.crash_live_state where id = 1 for update;
+  if not found then
+    return;
+  end if;
+
+  if s.betting_ends_at is null and s.phase = 'betting' then
+    update public.crash_live_state
+    set betting_ends_at = now() + interval '5 seconds',
+        updated_at = now()
+    where id = 1;
+  end if;
+
+  if s.crash_point is null or s.crash_point < 1.01 then
+    update public.crash_live_state
+    set crash_point = public.crash_random_point(),
+        updated_at = now()
+    where id = 1;
+  end if;
+
+  if s.phase = 'flying' and s.flying_started_at is null then
+    update public.crash_live_state
+    set flying_started_at = now(),
+        updated_at = now()
+    where id = 1;
+  end if;
+
+  if s.phase = 'crashed' and s.crashed_at is null then
+    update public.crash_live_state
+    set crashed_at = now(),
+        updated_at = now()
+    where id = 1;
+  end if;
+
+  if s.phase not in ('betting', 'flying', 'crashed') then
+    update public.crash_live_state
+    set phase = 'betting',
+        betting_ends_at = now() + interval '5 seconds',
+        flying_started_at = null,
+        crashed_at = null,
+        updated_at = now()
+    where id = 1;
+  end if;
+end;
+$$;
+
+-- =============================================================================
 -- État public (crash_point masqué sauf phase crashed)
 -- =============================================================================
 
@@ -82,9 +155,11 @@ as $$
 declare
   s public.crash_live_state%rowtype;
 begin
+  perform public.crash_repair_live_state();
   select * into s from public.crash_live_state where id = 1;
   if not found then
-    insert into public.crash_live_state (id) values (1);
+    insert into public.crash_live_state (id, betting_ends_at, crash_point)
+    values (1, now() + interval '5 seconds', public.crash_random_point());
     select * into s from public.crash_live_state where id = 1;
   end if;
 
@@ -115,13 +190,16 @@ declare
   mult numeric;
   next_point numeric;
 begin
+  perform public.crash_repair_live_state();
+
   select * into s from public.crash_live_state where id = 1 for update;
   if not found then
-    insert into public.crash_live_state (id) values (1);
+    insert into public.crash_live_state (id, betting_ends_at, crash_point)
+    values (1, now() + interval '5 seconds', public.crash_random_point());
     return public.crash_get_state();
   end if;
 
-  if s.phase = 'betting' and now() >= s.betting_ends_at then
+  if s.phase = 'betting' and s.betting_ends_at is not null and now() >= s.betting_ends_at then
     update public.crash_live_state
     set phase = 'flying',
         flying_started_at = now(),
@@ -306,6 +384,7 @@ drop policy if exists "Crash history: lecture" on public.crash_round_history;
 create policy "Crash history: lecture"
   on public.crash_round_history for select to anon, authenticated using (true);
 
+grant execute on function public.crash_repair_live_state() to anon, authenticated;
 grant execute on function public.crash_get_state() to anon, authenticated;
 grant execute on function public.crash_advance_tick() to anon, authenticated;
 grant execute on function public.crash_place_bet(bigint) to authenticated;

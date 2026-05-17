@@ -11,6 +11,11 @@ import {
   formatMultiplier,
   multiplierAtElapsedMs,
 } from "@/utils/crash/engine";
+import {
+  computeBettingSecondsLeft,
+  isValidIsoTimestamp,
+  parseIsoMs,
+} from "@/utils/crash/datetime";
 import type {
   CrashBetRow,
   CrashPhase,
@@ -39,9 +44,10 @@ function loadDemoBalance(): number {
   return raw ? Number(raw) : INITIAL_BALANCE;
 }
 
-function multiplierFromServerStart(flyingStartedAt: string): number {
-  const elapsed = Date.now() - new Date(flyingStartedAt).getTime();
-  return multiplierAtElapsedMs(Math.max(0, elapsed));
+function multiplierFromServerStart(flyingStartedAt: string | null): number {
+  const startMs = parseIsoMs(flyingStartedAt);
+  if (startMs === null) return 1;
+  return multiplierAtElapsedMs(Math.max(0, Date.now() - startMs));
 }
 
 export type { CrashPhase };
@@ -57,7 +63,9 @@ export function useCrashGame() {
   const [presence, setPresence] = useState<CrashPresencePlayer[]>([]);
   const [crashHistory, setCrashHistory] = useState<number[]>([]);
   const [curvePoints, setCurvePoints] = useState<number[]>([1]);
-  const [bettingSecondsLeft, setBettingSecondsLeft] = useState(5);
+  const [bettingSecondsLeft, setBettingSecondsLeft] = useState<number | null>(
+    null
+  );
   const [message, setMessage] = useState<string | null>(null);
   const [connected, setConnected] = useState(false);
 
@@ -278,19 +286,15 @@ export function useCrashGame() {
   }, [phase, gameState?.flying_started_at]);
 
   useEffect(() => {
-    if (phase !== "betting" || !gameState?.betting_ends_at) {
-      setBettingSecondsLeft(0);
+    if (phase !== "betting") {
+      setBettingSecondsLeft(null);
       return;
     }
 
     const tick = () => {
-      const left = Math.max(
-        0,
-        Math.ceil(
-          (new Date(gameState.betting_ends_at).getTime() - Date.now()) / 1000
-        )
+      setBettingSecondsLeft(
+        computeBettingSecondsLeft(gameState?.betting_ends_at ?? null)
       );
-      setBettingSecondsLeft(left);
     };
 
     tick();
@@ -298,13 +302,45 @@ export function useCrashGame() {
     return () => clearInterval(id);
   }, [phase, gameState?.betting_ends_at]);
 
+  /** Répare l'état serveur si betting_ends_at est absent (évite NaN + boucle bloquée). */
+  useEffect(() => {
+    if (phase !== "betting") return;
+    if (isValidIsoTimestamp(gameState?.betting_ends_at)) return;
+
+    let cancelled = false;
+
+    const repair = async () => {
+      const { data, error } = await advanceCrashTick();
+      if (cancelled) return;
+      if (data) {
+        applyState(data);
+        return;
+      }
+      if (error) setProfileError(error);
+      await refreshState();
+    };
+
+    void repair();
+    const id = setInterval(() => void repair(), 800);
+    return () => {
+      cancelled = true;
+      clearInterval(id);
+    };
+  }, [phase, gameState?.betting_ends_at, applyState, refreshState]);
+
   const placeBet = useCallback(async () => {
     if (!userId || isDemoMode) {
       setMessage("Connecte-toi pour jouer en multijoueur.");
       setTimeout(() => setMessage(null), 2500);
       return;
     }
-    if (phase !== "betting" || bettingSecondsLeft <= 0) return;
+    if (
+      phase !== "betting" ||
+      bettingSecondsLeft === null ||
+      bettingSecondsLeft <= 0
+    ) {
+      return;
+    }
     if (hasPlacedBet) return;
     if (balance < bet) {
       setMessage("Solde insuffisant.");
@@ -407,6 +443,7 @@ export function useCrashGame() {
     !!userId &&
     !isDemoMode &&
     phase === "betting" &&
+    bettingSecondsLeft !== null &&
     bettingSecondsLeft > 0 &&
     !hasPlacedBet &&
     !profileLoading &&
@@ -440,6 +477,7 @@ export function useCrashGame() {
     canCashout,
     potentialWin,
     bettingSecondsLeft,
+    chronoReady: bettingSecondsLeft !== null,
     roundBets,
     presence,
     activePlayersCount,

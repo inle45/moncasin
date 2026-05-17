@@ -13,7 +13,7 @@ interface CrashControlsProps {
   canPlaceBet: boolean;
   canCashout: boolean;
   hasPlacedBet: boolean;
-  bettingSecondsLeft: number;
+  bettingSecondsLeft: number | null;
   isDemoMode: boolean;
   onBetChange: (delta: number) => void;
   onPlaceBet: () => void;
@@ -81,7 +81,8 @@ export function CrashControls({
 
         {hasPlacedBet && isBetting && (
           <p className="text-center text-xs text-casino-gold-neon">
-            Mise enregistrée · décollage dans {bettingSecondsLeft}s
+            Mise enregistrée · décollage dans{" "}
+            {bettingSecondsLeft ?? "…"}s
           </p>
         )}
 
