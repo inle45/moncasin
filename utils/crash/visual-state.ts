@@ -1,5 +1,4 @@
-import { CRASH_BETTING_SECONDS } from "@/utils/crash/constants";
-import { parseIsoMs } from "@/utils/crash/datetime";
+import { computeBettingSecondsLeft, parseIsoMs } from "@/utils/crash/datetime";
 import { multiplierAtElapsedMs } from "@/utils/crash/engine";
 import type { CrashPhase, CrashPublicState } from "@/utils/crash/types";
 
@@ -39,21 +38,10 @@ export function deriveVisualState(
   const crashedAt = parseIsoMs(server.crashed_at);
 
   if (server.phase === "betting") {
-    const left =
-      bettingEnd === null
-        ? null
-        : Math.max(
-            0,
-            Math.min(
-              CRASH_BETTING_SECONDS,
-              Math.ceil((bettingEnd - now) / 1000)
-            )
-          );
-
     return {
       phase: "betting",
       multiplier: 1,
-      bettingSecondsLeft: left,
+      bettingSecondsLeft: computeBettingSecondsLeft(server.betting_ends_at),
       flyingStartedAt: null,
       crashPoint: null,
       awaitingServerSync: bettingEnd === null,

@@ -16,7 +16,6 @@ import {
   LocalCrashSimulator,
   LOCAL_CRASH_TICK_MS,
 } from "@/utils/crash/local-simulator";
-import { createFallbackCrashState } from "@/utils/crash/default-state";
 import type { CrashBetRow, CrashPhase, CrashPublicState } from "@/utils/crash/types";
 import { INITIAL_BALANCE } from "@/utils/slot/constants";
 import { createClient } from "@/utils/supabase/client";
@@ -49,6 +48,7 @@ export function useCrashGame() {
   const placingBetRef = useRef(false);
   const lastRealtimeAtRef = useRef(0);
   const lastCurveMRef = useRef(1);
+  const lastKnownStateRef = useRef<CrashPublicState | null>(null);
 
   const [serverState, setServerState] = useState<CrashPublicState | null>(null);
   const [useFallback, setUseFallback] = useState(!isSupabaseConfigured());
@@ -71,6 +71,7 @@ export function useCrashGame() {
   const [userId, setUserId] = useState<string | null>(null);
   const [isSyncing, setIsSyncing] = useState(isSupabaseConfigured());
   const [profileError, setProfileError] = useState<string | null>(null);
+  const [tickError, setTickError] = useState<string | null>(null);
 
   const setBalanceTracked = useCallback((next: number) => {
     setBalance(Math.max(0, Math.floor(next)));
@@ -84,6 +85,7 @@ export function useCrashGame() {
     const nextSig = crashStateSignature(state);
 
     serverStateRef.current = state;
+    lastKnownStateRef.current = state;
     setUseFallback(false);
     lastRealtimeAtRef.current = Date.now();
 
@@ -148,10 +150,11 @@ export function useCrashGame() {
       applyServerState(state);
       await reloadBets(state.round_id);
     } else if (state) {
-      const advanced = await runCrashLoopTick();
-      if (advanced?.round_id) {
-        applyServerState(advanced);
-        await reloadBets(advanced.round_id);
+      const tick = await runCrashLoopTick();
+      if (tick.errors.length) setTickError(tick.errors.join(" · "));
+      if (tick.state?.round_id) {
+        applyServerState(tick.state);
+        await reloadBets(tick.state.round_id);
       }
     } else {
       const retried = await refreshServerState();
@@ -342,8 +345,13 @@ export function useCrashGame() {
           await refreshServerState();
         }
 
-        const next = await runCrashLoopTick();
-        if (next) applyServerState(next);
+        const tick = await runCrashLoopTick();
+        if (tick.errors.length) {
+          setTickError(tick.errors.slice(0, 2).join(" · "));
+        } else {
+          setTickError(null);
+        }
+        if (tick.state) applyServerState(tick.state);
       } finally {
         advancingRef.current = false;
       }
@@ -384,7 +392,10 @@ export function useCrashGame() {
         return;
       }
 
-      const state = serverStateRef.current ?? createFallbackCrashState();
+      const state =
+        serverStateRef.current ?? lastKnownStateRef.current;
+      if (!state) return;
+
       const visual = deriveVisualState(state, Date.now());
 
       setPhase(visual.phase);
@@ -557,6 +568,7 @@ export function useCrashGame() {
     profileLoading: false,
     isSyncing,
     profileError,
+    tickError,
     isDemoMode: demo,
     useFallback,
     placeBet,

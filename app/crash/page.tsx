@@ -31,6 +31,7 @@ export default function CrashPage() {
     connected,
     roundNumber,
     isDemoMode,
+    tickError,
     placeBet,
     cashout,
     changeBet,
@@ -51,6 +52,15 @@ export default function CrashPage() {
           role="status"
         >
           {message}
+        </p>
+      )}
+
+      {tickError && (
+        <p
+          className="mx-4 mt-2 rounded-xl border border-amber-400/40 bg-amber-500/10 px-3 py-2 text-center text-[11px] text-amber-100/90"
+          role="alert"
+        >
+          Sync manche : {tickError}
         </p>
       )}
 
