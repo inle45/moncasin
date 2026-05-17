@@ -6,10 +6,7 @@ import {
   CRASH_BET_OPTIONS,
   DEFAULT_CRASH_BET,
 } from "@/utils/crash/constants";
-import {
-  deriveVisualState,
-  serverStateNeedsAdvance,
-} from "@/utils/crash/visual-state";
+import { deriveVisualState } from "@/utils/crash/visual-state";
 import { liveStateRowToPublic } from "@/utils/crash/live-state";
 import {
   LocalCrashSimulator,
@@ -22,6 +19,7 @@ import { createClient } from "@/utils/supabase/client";
 import { isDemoMode, isSupabaseConfigured } from "@/utils/supabase/config";
 import {
   CRASH_CHANNEL,
+  advanceCrashTick,
   cashoutCrash,
   fetchCrashHistory,
   fetchCrashState,
@@ -33,7 +31,8 @@ import { fetchProfile } from "@/utils/supabase/profiles";
 
 export type { CrashPhase };
 
-const TICK_PILOT_MS = 450;
+/** Boucle multijoueur : crash_advance_tick idempotent côté client (pas de cron Vercel). */
+const LOOP_TICK_MS = 500;
 const VISUAL_TICK_MS = 50;
 const REALTIME_STALE_MS = 30_000;
 const STATE_POLL_MS = 3_000;
@@ -133,13 +132,14 @@ export function useCrashGame() {
 
     if (points.length) setCrashHistory(points);
 
-    if (state) {
+    if (state?.round_id) {
       applyServerState(state);
       await reloadBets(state.round_id);
-
-      if (serverStateNeedsAdvance(state)) {
-        const advanced = await advanceCrashFromClient();
-        if (advanced) applyServerState(advanced);
+    } else if (state) {
+      const advanced = await advanceCrashFromClient();
+      if (advanced?.round_id) {
+        applyServerState(advanced);
+        await reloadBets(advanced.round_id);
       }
     } else {
       const retried = await refreshServerState();
@@ -315,30 +315,38 @@ export function useCrashGame() {
     return () => clearInterval(id);
   }, [useFallback, refreshServerState]);
 
-  // Pilote de boucle : avance crash_advance_tick si la manche est expirée
+  /**
+   * Moteur multijoueur : le navigateur appelle crash_advance_tick en continu.
+   * La RPC est idempotente (rien ne change tant que la phase n'est pas expirée).
+   */
   useEffect(() => {
     if (!isSupabaseConfigured() || isDemoMode()) return;
 
-    const id = setInterval(() => {
-      void (async () => {
-        let state = serverStateRef.current;
-        if (!state?.round_id) {
-          state = await refreshServerState();
-          if (!state) return;
+    const runTick = async () => {
+      if (advancingRef.current) return;
+      advancingRef.current = true;
+      try {
+        if (!serverStateRef.current?.round_id) {
+          await refreshServerState();
         }
 
-        if (!serverStateNeedsAdvance(state) || advancingRef.current) return;
-
-        advancingRef.current = true;
-        try {
-          const next = await advanceCrashFromClient();
-          if (next) applyServerState(next);
-        } finally {
-          advancingRef.current = false;
+        const { data, error } = await advanceCrashTick();
+        if (data) {
+          applyServerState(data);
+          return;
         }
-      })();
-    }, TICK_PILOT_MS);
 
+        if (error) {
+          const fallback = await advanceCrashFromClient();
+          if (fallback) applyServerState(fallback);
+        }
+      } finally {
+        advancingRef.current = false;
+      }
+    };
+
+    void runTick();
+    const id = setInterval(() => void runTick(), LOOP_TICK_MS);
     return () => clearInterval(id);
   }, [applyServerState, refreshServerState]);
 
@@ -421,7 +429,16 @@ export function useCrashGame() {
     }
 
     const roundId =
-      roundIdRef.current || serverStateRef.current?.round_id || "";
+      roundIdRef.current ||
+      serverStateRef.current?.round_id ||
+      serverState?.round_id ||
+      "";
+    if (!roundId) {
+      setMessage("Manche non synchronisée — attente du round_id…");
+      void refreshServerState();
+      window.setTimeout(() => setMessage(null), 2500);
+      return;
+    }
     const { ok, balance: newBal, error } = await placeCrashBet(bet, roundId);
     if (ok) {
       if (newBal != null) setBalanceTracked(newBal);
@@ -432,13 +449,26 @@ export function useCrashGame() {
       setMessage(error ?? "Mise refusée");
     }
     window.setTimeout(() => setMessage(null), 2000);
-  }, [phase, bettingSecondsLeft, hasPlacedBet, balance, bet, setBalanceTracked, reloadBets]);
+  }, [
+    phase,
+    bettingSecondsLeft,
+    hasPlacedBet,
+    balance,
+    bet,
+    serverState,
+    setBalanceTracked,
+    reloadBets,
+    refreshServerState,
+  ]);
 
   const cashout = useCallback(async () => {
     if (phase !== "flying" || !hasPlacedBet || hasCashedOut) return;
 
     const roundId =
-      roundIdRef.current || serverStateRef.current?.round_id || "";
+      roundIdRef.current ||
+      serverStateRef.current?.round_id ||
+      serverState?.round_id ||
+      "";
     const { ok, balance: newBal, payout, error } = await cashoutCrash(
       multiplier,
       roundId
@@ -512,7 +542,7 @@ export function useCrashGame() {
     activePlayersCount: Math.max(activePlayersCount, roundBets.length > 0 ? roundBets.length : 0),
     hasPlacedBet,
     hasCashedOut,
-    connected: multiplayerLive || realtimeConnected,
+    connected: multiplayerLive,
     roundNumber,
     profileLoading: false,
     isSyncing,

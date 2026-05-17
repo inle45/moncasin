@@ -14,8 +14,11 @@ export function parseCrashState(raw: unknown): CrashPublicState | null {
   const phase = o.phase as CrashPublicState["phase"];
   if (!["betting", "flying", "crashed"].includes(phase)) return null;
 
+  const roundId = String(o.round_id ?? "").trim();
+  if (!roundId) return null;
+
   return {
-    round_id: String(o.round_id ?? ""),
+    round_id: roundId,
     round_number: Number(o.round_number) || 0,
     phase,
     betting_ends_at: parseIsoField(o.betting_ends_at),

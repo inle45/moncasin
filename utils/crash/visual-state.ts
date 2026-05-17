@@ -55,7 +55,7 @@ export function deriveVisualState(
       bettingEnd === null
         ? null
         : Math.max(
-            1,
+            0,
             Math.min(
               CRASH_BETTING_SECONDS,
               Math.ceil((bettingEnd - now) / 1000)
