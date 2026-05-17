@@ -9,25 +9,18 @@ import {
 import {
   calculateCashoutPayout,
   formatMultiplier,
-  multiplierAtElapsedMs,
 } from "@/utils/crash/engine";
-import {
-  computeBettingSecondsLeft,
-  isValidIsoTimestamp,
-  parseIsoMs,
-} from "@/utils/crash/datetime";
+import { fetchCrashLoop, LOOP_POLL_MS } from "@/utils/crash/api-client";
+import { deriveVisualState } from "@/utils/crash/visual-state";
 import type {
   CrashBetRow,
   CrashPhase,
-  CrashPresencePlayer,
   CrashPublicState,
 } from "@/utils/crash/types";
+import type { CrashSnapshot } from "@/utils/crash/server-loop";
 import {
-  advanceCrashTick,
   cashoutCrash,
   CRASH_CHANNEL,
-  fetchCrashHistory,
-  fetchCrashState,
   fetchRoundBets,
   placeCrashBet,
 } from "@/utils/supabase/crash-room";
@@ -37,6 +30,7 @@ import { useCrashSounds } from "@/hooks/useCrashSounds";
 import type { RealtimeChannel } from "@supabase/supabase-js";
 
 const DEMO_BALANCE_KEY = "moncasin_demo_shop_balance";
+const API_STALE_MS = 4000;
 
 function loadDemoBalance(): number {
   if (typeof window === "undefined") return INITIAL_BALANCE;
@@ -44,102 +38,194 @@ function loadDemoBalance(): number {
   return raw ? Number(raw) : INITIAL_BALANCE;
 }
 
-function multiplierFromServerStart(flyingStartedAt: string | null): number {
-  const startMs = parseIsoMs(flyingStartedAt);
-  if (startMs === null) return 1;
-  return multiplierAtElapsedMs(Math.max(0, Date.now() - startMs));
-}
-
 export type { CrashPhase };
 
-export function useCrashGame() {
+interface UseCrashGameOptions {
+  initialSnapshot: CrashSnapshot;
+}
+
+export function useCrashGame({ initialSnapshot }: UseCrashGameOptions) {
   const sounds = useCrashSounds();
 
   const [balance, setBalance] = useState(INITIAL_BALANCE);
   const [bet, setBet] = useState(DEFAULT_CRASH_BET);
-  const [gameState, setGameState] = useState<CrashPublicState | null>(null);
-  const [multiplier, setMultiplier] = useState(1);
-  const [roundBets, setRoundBets] = useState<CrashBetRow[]>([]);
-  const [presence, setPresence] = useState<CrashPresencePlayer[]>([]);
-  const [crashHistory, setCrashHistory] = useState<number[]>([]);
-  const [curvePoints, setCurvePoints] = useState<number[]>([1]);
-  const [bettingSecondsLeft, setBettingSecondsLeft] = useState<number | null>(
-    null
+  const [serverState, setServerState] = useState<CrashPublicState | null>(
+    initialSnapshot.state
   );
+  const [visual, setVisual] = useState(() =>
+    deriveVisualState(initialSnapshot.state)
+  );
+  const [roundBets, setRoundBets] = useState<CrashBetRow[]>(
+    initialSnapshot.bets
+  );
+  const [crashHistory, setCrashHistory] = useState<number[]>(
+    initialSnapshot.history
+  );
+  const [curvePoints, setCurvePoints] = useState<number[]>([1]);
   const [message, setMessage] = useState<string | null>(null);
-  const [connected, setConnected] = useState(false);
+  const [apiConnected, setApiConnected] = useState(!initialSnapshot.error);
 
   const [profileLoading, setProfileLoading] = useState(true);
   const [isSyncing, setIsSyncing] = useState(false);
-  const [profileError, setProfileError] = useState<string | null>(null);
+  const [profileError, setProfileError] = useState<string | null>(
+    initialSnapshot.error
+  );
   const [isDemoMode, setIsDemoMode] = useState(DEMO_MODE);
   const [userId, setUserId] = useState<string | null>(null);
-  const [username, setUsername] = useState("Joueur");
 
-  const channelRef = useRef<RealtimeChannel | null>(null);
-  const gameStateRef = useRef<CrashPublicState | null>(null);
-  const rafRef = useRef<number | null>(null);
-  const lastPhaseRef = useRef<CrashPhase | null>(null);
+  const serverStateRef = useRef<CrashPublicState | null>(initialSnapshot.state);
+  const lastPhaseRef = useRef<CrashPhase | null>(
+    initialSnapshot.state?.phase ?? null
+  );
   const cashedOutRef = useRef(false);
+  const channelRef = useRef<RealtimeChannel | null>(null);
+  const lastApiOkRef = useRef<number>(Date.now());
 
-  const phase: CrashPhase = gameState?.phase ?? "betting";
-  const crashPoint = gameState?.crash_point ?? null;
+  const phase = visual.phase;
+  const multiplier = visual.multiplier;
+  const bettingSecondsLeft = visual.bettingSecondsLeft;
+  const crashPoint = visual.crashPoint;
 
   useEffect(() => {
-    gameStateRef.current = gameState;
-  }, [gameState]);
+    serverStateRef.current = serverState;
+  }, [serverState]);
 
   const myBet = roundBets.find((b) => b.user_id === userId) ?? null;
   const hasPlacedBet = !!myBet;
   const hasCashedOut = myBet?.status === "cashed_out";
 
-  const loadBets = useCallback(async (roundId: string) => {
-    const { bets } = await fetchRoundBets(roundId);
-    setRoundBets(bets);
-  }, []);
-
-  const applyState = useCallback(
-    (state: CrashPublicState) => {
-      const prev = lastPhaseRef.current;
-      setGameState(state);
-
-      if (state.phase === "betting") {
-        cashedOutRef.current = false;
-        setCurvePoints([1]);
-        setMultiplier(1);
-        if (prev && prev !== "betting") {
-          void loadBets(state.round_id);
-        }
+  const applySnapshot = useCallback(
+    (snap: CrashSnapshot) => {
+      if (snap.error && !snap.state) {
+        setProfileError(snap.error);
+        setApiConnected(false);
+        return;
       }
 
-      if (state.phase === "flying" && prev !== "flying") {
+      if (snap.error) {
+        setProfileError(snap.error);
+      } else {
+        setProfileError(null);
+      }
+
+      lastApiOkRef.current = Date.now();
+      setApiConnected(true);
+
+      if (snap.history.length) {
+        setCrashHistory(snap.history);
+      }
+
+      if (!snap.state) return;
+
+      const prev = lastPhaseRef.current;
+      const next = snap.state;
+      setServerState(next);
+
+      if (next.phase === "betting" && prev !== "betting") {
+        cashedOutRef.current = false;
+        setCurvePoints([1]);
+      }
+
+      if (next.phase === "flying" && prev !== "flying") {
         sounds.playLaunch();
         setCurvePoints([1]);
       }
 
-      if (state.phase === "crashed" && prev !== "crashed" && state.crash_point) {
+      if (next.phase === "crashed" && prev !== "crashed" && next.crash_point) {
         sounds.playCrash();
-        setCrashHistory((h) =>
-          [state.crash_point!, ...h.filter((x) => x !== state.crash_point)].slice(
-            0,
-            12
-          )
-        );
-        setMessage(`Crash à ${formatMultiplier(state.crash_point)} !`);
+        setMessage(`Crash à ${formatMultiplier(next.crash_point)} !`);
         setTimeout(() => setMessage(null), 2500);
       }
 
-      lastPhaseRef.current = state.phase;
-      void loadBets(state.round_id);
+      lastPhaseRef.current = next.phase;
+
+      if (snap.bets.length) {
+        setRoundBets(snap.bets);
+      }
     },
-    [loadBets, sounds]
+    [sounds]
   );
 
-  const refreshState = useCallback(async () => {
-    const { data, error } = await fetchCrashState();
-    if (data) applyState(data);
-    if (error) setProfileError(error);
-  }, [applyState]);
+  const loadBets = useCallback(async (roundId: string) => {
+    const { bets } = await fetchRoundBets(roundId);
+    if (bets.length) setRoundBets(bets);
+  }, []);
+
+  /** Horloge locale fluide (indépendante de Realtime). */
+  useEffect(() => {
+    const tickVisual = () => {
+      const v = deriveVisualState(serverStateRef.current);
+      setVisual(v);
+
+      if (v.phase === "flying") {
+        setCurvePoints((pts) => {
+          const next = [...pts, v.multiplier];
+          return next.length > 80 ? next.slice(-80) : next;
+        });
+      }
+    };
+
+    tickVisual();
+    const id = setInterval(tickVisual, 80);
+    return () => clearInterval(id);
+  }, []);
+
+  /** Boucle serveur autonome via API (spectateur OK, sans auth). */
+  useEffect(() => {
+    let cancelled = false;
+
+    const poll = async () => {
+      const snap = await fetchCrashLoop(serverStateRef.current?.round_id);
+      if (cancelled) return;
+      applySnapshot(snap);
+
+      const rid = snap.state?.round_id;
+      if (rid && snap.bets.length === 0) {
+        await loadBets(rid);
+      }
+    };
+
+    void poll();
+    const id = setInterval(() => void poll(), LOOP_POLL_MS);
+
+    return () => {
+      cancelled = true;
+      clearInterval(id);
+    };
+  }, [applySnapshot, loadBets]);
+
+  /** Statut « Live » = API récente (pas Realtime). */
+  useEffect(() => {
+    const id = setInterval(() => {
+      setApiConnected(Date.now() - lastApiOkRef.current < API_STALE_MS);
+    }, 500);
+    return () => clearInterval(id);
+  }, []);
+
+  /** Realtime optionnel : mises à jour des paris uniquement. */
+  useEffect(() => {
+    const supabase = createClient();
+    if (!supabase) return;
+
+    const channel = supabase
+      .channel(CRASH_CHANNEL)
+      .on(
+        "postgres_changes",
+        { event: "*", schema: "public", table: "crash_bets" },
+        () => {
+          const rid = serverStateRef.current?.round_id;
+          if (rid) void loadBets(rid);
+        }
+      )
+      .subscribe();
+
+    channelRef.current = channel;
+
+    return () => {
+      void supabase.removeChannel(channel);
+      channelRef.current = null;
+    };
+  }, [loadBets]);
 
   useEffect(() => {
     let mounted = true;
@@ -151,182 +237,34 @@ export function useCrashGame() {
         setIsDemoMode(true);
         setBalance(loadDemoBalance());
         setProfileLoading(false);
-      } else {
-        const { user } = await safeGetUser();
-        if (!mounted) return;
-        if (user) {
-          setUserId(user.id);
-          const { profile } = await fetchProfile(user.id);
-          if (profile) {
-            setBalance(Number(profile.balance));
-            setUsername(profile.username ?? "Joueur");
-            setIsDemoMode(false);
-          } else {
-            setIsDemoMode(true);
-            setBalance(loadDemoBalance());
-          }
+        return;
+      }
+
+      const { user } = await safeGetUser();
+      if (!mounted) return;
+
+      if (user) {
+        setUserId(user.id);
+        const { profile } = await fetchProfile(user.id);
+        if (profile) {
+          setBalance(Number(profile.balance));
+          setIsDemoMode(false);
         } else {
           setIsDemoMode(true);
           setBalance(loadDemoBalance());
         }
-        setProfileLoading(false);
+      } else {
+        setIsDemoMode(true);
+        setBalance(loadDemoBalance());
       }
 
-      const { points } = await fetchCrashHistory();
-      if (mounted && points.length) setCrashHistory(points);
-
-      await refreshState();
+      setProfileLoading(false);
     })();
 
     return () => {
       mounted = false;
     };
-  }, [refreshState]);
-
-  useEffect(() => {
-    const supabase = createClient();
-    if (!supabase) return;
-
-    const channel = supabase.channel(CRASH_CHANNEL, {
-      config: { presence: { key: userId ?? `guest-${Math.random()}` } },
-    });
-
-    channel
-      .on(
-        "postgres_changes",
-        { event: "*", schema: "public", table: "crash_live_state" },
-        () => {
-          void refreshState();
-        }
-      )
-      .on(
-        "postgres_changes",
-        { event: "*", schema: "public", table: "crash_bets" },
-        () => {
-          const rid = gameStateRef.current?.round_id;
-          if (rid) void loadBets(rid);
-        }
-      )
-      .on("broadcast", { event: "cashout" }, ({ payload }) => {
-        const p = payload as {
-          user_id: string;
-          username: string;
-          multiplier: number;
-          payout: number;
-        };
-        setRoundBets((prev) =>
-          prev.map((b) =>
-            b.user_id === p.user_id
-              ? {
-                  ...b,
-                  status: "cashed_out" as const,
-                  cashout_multiplier: p.multiplier,
-                  payout: p.payout,
-                }
-              : b
-          )
-        );
-      })
-      .on("presence", { event: "sync" }, () => {
-        const state = channel.presenceState<CrashPresencePlayer>();
-        const players: CrashPresencePlayer[] = [];
-        Object.values(state).forEach((metas) => {
-          metas.forEach((m) => players.push(m as CrashPresencePlayer));
-        });
-        setPresence(players);
-      })
-      .subscribe(async (status) => {
-        setConnected(status === "SUBSCRIBED");
-        if (status === "SUBSCRIBED" && userId) {
-          await channel.track({
-            user_id: userId,
-            username,
-            online_at: new Date().toISOString(),
-          });
-        }
-      });
-
-    channelRef.current = channel;
-
-    const tickInterval = setInterval(() => {
-      void advanceCrashTick().then(({ data }) => {
-        if (data) applyState(data);
-      });
-    }, 250);
-
-    return () => {
-      clearInterval(tickInterval);
-      void supabase.removeChannel(channel);
-      channelRef.current = null;
-    };
-  }, [applyState, loadBets, refreshState, userId, username]);
-
-  useEffect(() => {
-    if (phase !== "flying" || !gameState?.flying_started_at) {
-      if (rafRef.current) cancelAnimationFrame(rafRef.current);
-      return;
-    }
-
-    const startedAt = gameState.flying_started_at;
-
-    const loop = () => {
-      const m = multiplierFromServerStart(startedAt);
-      setMultiplier(m);
-      setCurvePoints((pts) => {
-        const next = [...pts, m];
-        return next.length > 80 ? next.slice(-80) : next;
-      });
-      rafRef.current = requestAnimationFrame(loop);
-    };
-
-    rafRef.current = requestAnimationFrame(loop);
-    return () => {
-      if (rafRef.current) cancelAnimationFrame(rafRef.current);
-    };
-  }, [phase, gameState?.flying_started_at]);
-
-  useEffect(() => {
-    if (phase !== "betting") {
-      setBettingSecondsLeft(null);
-      return;
-    }
-
-    const tick = () => {
-      setBettingSecondsLeft(
-        computeBettingSecondsLeft(gameState?.betting_ends_at ?? null)
-      );
-    };
-
-    tick();
-    const id = setInterval(tick, 100);
-    return () => clearInterval(id);
-  }, [phase, gameState?.betting_ends_at]);
-
-  /** Répare l'état serveur si betting_ends_at est absent (évite NaN + boucle bloquée). */
-  useEffect(() => {
-    if (phase !== "betting") return;
-    if (isValidIsoTimestamp(gameState?.betting_ends_at)) return;
-
-    let cancelled = false;
-
-    const repair = async () => {
-      const { data, error } = await advanceCrashTick();
-      if (cancelled) return;
-      if (data) {
-        applyState(data);
-        return;
-      }
-      if (error) setProfileError(error);
-      await refreshState();
-    };
-
-    void repair();
-    const id = setInterval(() => void repair(), 800);
-    return () => {
-      cancelled = true;
-      clearInterval(id);
-    };
-  }, [phase, gameState?.betting_ends_at, applyState, refreshState]);
+  }, []);
 
   const placeBet = useCallback(async () => {
     if (!userId || isDemoMode) {
@@ -335,7 +273,7 @@ export function useCrashGame() {
       return;
     }
     if (
-      phase !== "betting" ||
+      serverState?.phase !== "betting" ||
       bettingSecondsLeft === null ||
       bettingSecondsLeft <= 0
     ) {
@@ -359,23 +297,28 @@ export function useCrashGame() {
     }
 
     if (result.balance != null) setBalance(result.balance);
-    if (gameState?.round_id) await loadBets(gameState.round_id);
+    if (serverState?.round_id) await loadBets(serverState.round_id);
     setMessage(`Mise de ${bet} jetons enregistrée !`);
     setTimeout(() => setMessage(null), 2000);
   }, [
     bet,
     balance,
     bettingSecondsLeft,
-    gameState?.round_id,
     hasPlacedBet,
     isDemoMode,
     loadBets,
-    phase,
+    serverState?.phase,
+    serverState?.round_id,
     userId,
   ]);
 
   const cashout = useCallback(async () => {
-    if (!userId || phase !== "flying" || !myBet || myBet.status !== "active") {
+    if (
+      !userId ||
+      serverState?.phase !== "flying" ||
+      !myBet ||
+      myBet.status !== "active"
+    ) {
       return;
     }
     if (cashedOutRef.current) return;
@@ -393,7 +336,8 @@ export function useCrashGame() {
     }
 
     const finalMult = result.multiplier ?? multiplier;
-    const payout = result.payout ?? calculateCashoutPayout(myBet.bet_amount, finalMult);
+    const payout =
+      result.payout ?? calculateCashoutPayout(myBet.bet_amount, finalMult);
 
     if (result.balance != null) setBalance(result.balance);
 
@@ -402,31 +346,12 @@ export function useCrashGame() {
       `Cashout ${formatMultiplier(finalMult)} · +${payout.toLocaleString("fr-FR")} jetons`
     );
 
-    channelRef.current?.send({
-      type: "broadcast",
-      event: "cashout",
-      payload: {
-        user_id: userId,
-        username,
-        multiplier: finalMult,
-        payout,
-      },
-    });
-
-    if (gameState?.round_id) await loadBets(gameState.round_id);
-  }, [
-    gameState?.round_id,
-    multiplier,
-    myBet,
-    phase,
-    sounds,
-    userId,
-    username,
-  ]);
+    if (serverState?.round_id) await loadBets(serverState.round_id);
+  }, [multiplier, myBet, serverState?.phase, serverState?.round_id, sounds, userId]);
 
   const changeBet = useCallback(
     (delta: number) => {
-      if (phase !== "betting" || hasPlacedBet) return;
+      if (serverState?.phase !== "betting" || hasPlacedBet) return;
       const idx = CRASH_BET_OPTIONS.indexOf(
         bet as (typeof CRASH_BET_OPTIONS)[number]
       );
@@ -436,13 +361,13 @@ export function useCrashGame() {
       );
       setBet(CRASH_BET_OPTIONS[next]);
     },
-    [bet, hasPlacedBet, phase]
+    [bet, hasPlacedBet, serverState?.phase]
   );
 
   const canPlaceBet =
     !!userId &&
     !isDemoMode &&
-    phase === "betting" &&
+    serverState?.phase === "betting" &&
     bettingSecondsLeft !== null &&
     bettingSecondsLeft > 0 &&
     !hasPlacedBet &&
@@ -451,13 +376,12 @@ export function useCrashGame() {
     balance >= bet;
 
   const canCashout =
-    phase === "flying" &&
+    serverState?.phase === "flying" &&
     !!myBet &&
     myBet.status === "active" &&
     !cashedOutRef.current &&
     !isSyncing;
 
-  const activePlayersCount = Math.max(roundBets.length, presence.length);
   const potentialWin = calculateCashoutPayout(
     myBet?.bet_amount ?? bet,
     phase === "flying" ? multiplier : 1
@@ -479,12 +403,12 @@ export function useCrashGame() {
     bettingSecondsLeft,
     chronoReady: bettingSecondsLeft !== null,
     roundBets,
-    presence,
-    activePlayersCount,
+    presence: [],
+    activePlayersCount: roundBets.length,
     hasPlacedBet,
     hasCashedOut,
-    connected,
-    roundNumber: gameState?.round_number ?? 0,
+    connected: apiConnected,
+    roundNumber: serverState?.round_number ?? 0,
     profileLoading,
     isSyncing,
     profileError,

@@ -1,6 +1,10 @@
 {
   "crons": [
     {
+      "path": "/api/crash/loop",
+      "schedule": "* * * * *"
+    },
+    {
       "path": "/api/cron/crash-tick",
       "schedule": "* * * * *"
     }

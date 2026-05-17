@@ -33,7 +33,7 @@ export function CrashPlayersList({
               : "bg-amber-500/20 text-amber-200"
           )}
         >
-          {connected ? "Live" : "Connexion…"}
+          {connected ? "En ligne" : "Sync…"}
         </span>
       </div>
 

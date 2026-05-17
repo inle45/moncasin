@@ -1,75 +1,11 @@
+import { parseCrashState } from "@/utils/crash/parse-state";
 import { createClient, safeQuery } from "./client";
-import type {
-  CrashBetRow,
-  CrashPublicState,
-} from "@/utils/crash/types";
+import type { CrashBetRow } from "@/utils/crash/types";
 
 import { CRASH_BETTING_SECONDS } from "@/utils/crash/constants";
 
 export const CRASH_CHANNEL = "crash:global";
 export { CRASH_BETTING_SECONDS };
-
-type RpcResult<T> = { data: T | null; error: string | null };
-
-function parseIsoField(value: unknown): string | null {
-  if (value == null || value === "null" || value === "undefined") return null;
-  const s = String(value).trim();
-  if (!s || s === "null") return null;
-  const ms = new Date(s).getTime();
-  return Number.isFinite(ms) ? s : null;
-}
-
-function parseState(raw: unknown): CrashPublicState | null {
-  if (!raw || typeof raw !== "object") return null;
-  const o = raw as Record<string, unknown>;
-  const phase = o.phase as CrashPublicState["phase"];
-  if (!["betting", "flying", "crashed"].includes(phase)) return null;
-
-  return {
-    round_id: String(o.round_id ?? ""),
-    round_number: Number(o.round_number) || 0,
-    phase,
-    betting_ends_at: parseIsoField(o.betting_ends_at),
-    flying_started_at: parseIsoField(o.flying_started_at),
-    crashed_at: parseIsoField(o.crashed_at),
-    crash_point: o.crash_point != null ? Number(o.crash_point) : null,
-  };
-}
-
-export async function fetchCrashState(): Promise<RpcResult<CrashPublicState>> {
-  const supabase = createClient();
-  if (!supabase) return { data: null, error: "Supabase non configuré" };
-
-  const { data: response, timedOut } = await safeQuery(
-    supabase.rpc("crash_get_state")
-  );
-
-  if (timedOut || !response) {
-    return { data: null, error: "Connexion expirée" };
-  }
-
-  const { data, error } = response as { data: unknown; error: { message: string } | null };
-  if (error) return { data: null, error: error.message };
-
-  const state = parseState(data);
-  return state ? { data: state, error: null } : { data: null, error: "État invalide" };
-}
-
-export async function advanceCrashTick(): Promise<RpcResult<CrashPublicState>> {
-  const supabase = createClient();
-  if (!supabase) return { data: null, error: null };
-
-  const { data: response, timedOut } = await safeQuery(
-    supabase.rpc("crash_advance_tick")
-  );
-
-  if (timedOut || !response) return { data: null, error: null };
-
-  const { data, error } = response as { data: unknown; error: { message: string } | null };
-  if (error) return { data: null, error: error.message };
-
-  return { data: parseState(data), error: null };
-}
 
 export async function placeCrashBet(
   amount: number
