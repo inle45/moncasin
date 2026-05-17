@@ -44,7 +44,7 @@ export function deriveVisualState(
       return {
         phase: "flying",
         multiplier: multiplierAtElapsedMs(elapsed),
-        bettingSecondsLeft: 0,
+        bettingSecondsLeft: null,
         flyingStartedAt: new Date(bettingEnd).toISOString(),
         crashPoint: null,
         awaitingServerSync: true,
@@ -55,9 +55,9 @@ export function deriveVisualState(
       bettingEnd === null
         ? null
         : Math.max(
-            0,
+            1,
             Math.min(
-              CRASH_BETTING_SECONDS + 1,
+              CRASH_BETTING_SECONDS,
               Math.ceil((bettingEnd - now) / 1000)
             )
           );

@@ -6,12 +6,14 @@ import {
   CRASH_BET_OPTIONS,
   DEFAULT_CRASH_BET,
 } from "@/utils/crash/constants";
+import { createFallbackCrashState } from "@/utils/crash/default-state";
 import {
   calculateCashoutPayout,
   formatMultiplier,
 } from "@/utils/crash/engine";
 import { fetchCrashLoop, LOOP_POLL_MS } from "@/utils/crash/api-client";
 import { deriveVisualState } from "@/utils/crash/visual-state";
+import { serverStateNeedsAdvance } from "@/utils/crash/visual-state";
 import type {
   CrashBetRow,
   CrashPhase,
@@ -21,16 +23,19 @@ import type { CrashSnapshot } from "@/utils/crash/server-loop";
 import {
   cashoutCrash,
   CRASH_CHANNEL,
+  fetchCrashHistory,
   fetchRoundBets,
   placeCrashBet,
+  syncCrashFromClient,
 } from "@/utils/supabase/crash-room";
-import { DEMO_MODE, createClient, safeGetUser } from "@/utils/supabase/client";
+import { createClient, safeGetUser } from "@/utils/supabase/client";
+import { isDemoMode as checkDemoMode } from "@/utils/supabase/config";
 import { fetchProfile } from "@/utils/supabase/profiles";
 import { useCrashSounds } from "@/hooks/useCrashSounds";
 import type { RealtimeChannel } from "@supabase/supabase-js";
 
 const DEMO_BALANCE_KEY = "moncasin_demo_shop_balance";
-const API_STALE_MS = 4000;
+const API_STALE_MS = 3000;
 
 function loadDemoBalance(): number {
   if (typeof window === "undefined") return INITIAL_BALANCE;
@@ -44,42 +49,41 @@ interface UseCrashGameOptions {
   initialSnapshot: CrashSnapshot;
 }
 
+function normalizeSnapshot(snap: CrashSnapshot): CrashSnapshot {
+  return {
+    ...snap,
+    state: snap.state ?? createFallbackCrashState(snap.serverTime),
+  };
+}
+
 export function useCrashGame({ initialSnapshot }: UseCrashGameOptions) {
   const sounds = useCrashSounds();
+  const boot = normalizeSnapshot(initialSnapshot);
 
   const [balance, setBalance] = useState(INITIAL_BALANCE);
   const [bet, setBet] = useState(DEFAULT_CRASH_BET);
-  const [serverState, setServerState] = useState<CrashPublicState | null>(
-    initialSnapshot.state
-  );
-  const [visual, setVisual] = useState(() =>
-    deriveVisualState(initialSnapshot.state)
-  );
-  const [roundBets, setRoundBets] = useState<CrashBetRow[]>(
-    initialSnapshot.bets
-  );
-  const [crashHistory, setCrashHistory] = useState<number[]>(
-    initialSnapshot.history
-  );
+  const [serverState, setServerState] = useState<CrashPublicState>(boot.state);
+  const [visual, setVisual] = useState(() => deriveVisualState(boot.state));
+  const [roundBets, setRoundBets] = useState<CrashBetRow[]>(boot.bets);
+  const [crashHistory, setCrashHistory] = useState<number[]>(boot.history);
   const [curvePoints, setCurvePoints] = useState<number[]>([1]);
   const [message, setMessage] = useState<string | null>(null);
-  const [apiConnected, setApiConnected] = useState(!initialSnapshot.error);
+  const [apiConnected, setApiConnected] = useState(true);
 
   const [profileLoading, setProfileLoading] = useState(true);
   const [isSyncing, setIsSyncing] = useState(false);
   const [profileError, setProfileError] = useState<string | null>(
-    initialSnapshot.error
+    boot.error
   );
-  const [isDemoMode, setIsDemoMode] = useState(DEMO_MODE);
+  const [isDemoMode, setIsDemoMode] = useState(checkDemoMode());
   const [userId, setUserId] = useState<string | null>(null);
 
-  const serverStateRef = useRef<CrashPublicState | null>(initialSnapshot.state);
-  const lastPhaseRef = useRef<CrashPhase | null>(
-    initialSnapshot.state?.phase ?? null
-  );
+  const serverStateRef = useRef<CrashPublicState>(boot.state);
+  const lastPhaseRef = useRef<CrashPhase | null>(boot.state.phase);
   const cashedOutRef = useRef(false);
   const channelRef = useRef<RealtimeChannel | null>(null);
   const lastApiOkRef = useRef<number>(Date.now());
+  const syncInFlightRef = useRef(false);
 
   const phase = visual.phase;
   const multiplier = visual.multiplier;
@@ -96,29 +100,23 @@ export function useCrashGame({ initialSnapshot }: UseCrashGameOptions) {
 
   const applySnapshot = useCallback(
     (snap: CrashSnapshot) => {
-      if (snap.error && !snap.state) {
-        setProfileError(snap.error);
-        setApiConnected(false);
-        return;
-      }
+      const normalized = normalizeSnapshot(snap);
+      const next = normalized.state;
 
-      if (snap.error) {
-        setProfileError(snap.error);
-      } else {
+      if (normalized.error) {
+        setProfileError(normalized.error);
+      } else if (normalized.source === "supabase") {
         setProfileError(null);
       }
 
       lastApiOkRef.current = Date.now();
       setApiConnected(true);
 
-      if (snap.history.length) {
-        setCrashHistory(snap.history);
+      if (normalized.history.length) {
+        setCrashHistory(normalized.history);
       }
 
-      if (!snap.state) return;
-
       const prev = lastPhaseRef.current;
-      const next = snap.state;
       setServerState(next);
 
       if (next.phase === "betting" && prev !== "betting") {
@@ -139,8 +137,8 @@ export function useCrashGame({ initialSnapshot }: UseCrashGameOptions) {
 
       lastPhaseRef.current = next.phase;
 
-      if (snap.bets.length) {
-        setRoundBets(snap.bets);
+      if (normalized.bets.length) {
+        setRoundBets(normalized.bets);
       }
     },
     [sounds]
@@ -151,7 +149,39 @@ export function useCrashGame({ initialSnapshot }: UseCrashGameOptions) {
     if (bets.length) setRoundBets(bets);
   }, []);
 
-  /** Horloge locale fluide (indépendante de Realtime). */
+  const syncGame = useCallback(async () => {
+    if (syncInFlightRef.current) return;
+    syncInFlightRef.current = true;
+
+    try {
+      let snap = await fetchCrashLoop(serverStateRef.current.round_id);
+
+      if (
+        snap.source === "fallback" ||
+        serverStateNeedsAdvance(snap.state)
+      ) {
+        const client = await syncCrashFromClient(10);
+        if (client.data) {
+          snap = {
+            ...snap,
+            state: client.data,
+            source: "supabase",
+            error: client.error,
+          };
+        }
+      }
+
+      applySnapshot(snap);
+
+      const rid = snap.state.round_id;
+      if (rid && !rid.startsWith("00000000")) {
+        await loadBets(rid);
+      }
+    } finally {
+      syncInFlightRef.current = false;
+    }
+  }, [applySnapshot, loadBets]);
+
   useEffect(() => {
     const tickVisual = () => {
       const v = deriveVisualState(serverStateRef.current);
@@ -170,31 +200,12 @@ export function useCrashGame({ initialSnapshot }: UseCrashGameOptions) {
     return () => clearInterval(id);
   }, []);
 
-  /** Boucle serveur autonome via API (spectateur OK, sans auth). */
   useEffect(() => {
-    let cancelled = false;
+    void syncGame();
+    const id = setInterval(() => void syncGame(), LOOP_POLL_MS);
+    return () => clearInterval(id);
+  }, [syncGame]);
 
-    const poll = async () => {
-      const snap = await fetchCrashLoop(serverStateRef.current?.round_id);
-      if (cancelled) return;
-      applySnapshot(snap);
-
-      const rid = snap.state?.round_id;
-      if (rid && snap.bets.length === 0) {
-        await loadBets(rid);
-      }
-    };
-
-    void poll();
-    const id = setInterval(() => void poll(), LOOP_POLL_MS);
-
-    return () => {
-      cancelled = true;
-      clearInterval(id);
-    };
-  }, [applySnapshot, loadBets]);
-
-  /** Statut « Live » = API récente (pas Realtime). */
   useEffect(() => {
     const id = setInterval(() => {
       setApiConnected(Date.now() - lastApiOkRef.current < API_STALE_MS);
@@ -202,7 +213,6 @@ export function useCrashGame({ initialSnapshot }: UseCrashGameOptions) {
     return () => clearInterval(id);
   }, []);
 
-  /** Realtime optionnel : mises à jour des paris uniquement. */
   useEffect(() => {
     const supabase = createClient();
     if (!supabase) return;
@@ -213,7 +223,7 @@ export function useCrashGame({ initialSnapshot }: UseCrashGameOptions) {
         "postgres_changes",
         { event: "*", schema: "public", table: "crash_bets" },
         () => {
-          const rid = serverStateRef.current?.round_id;
+          const rid = serverStateRef.current.round_id;
           if (rid) void loadBets(rid);
         }
       )
@@ -230,13 +240,16 @@ export function useCrashGame({ initialSnapshot }: UseCrashGameOptions) {
   useEffect(() => {
     let mounted = true;
 
-    (async () => {
-      setProfileLoading(true);
+    const timeout = setTimeout(() => {
+      if (mounted) setProfileLoading(false);
+    }, 4000);
 
-      if (DEMO_MODE) {
+    (async () => {
+      if (checkDemoMode()) {
         setIsDemoMode(true);
         setBalance(loadDemoBalance());
-        setProfileLoading(false);
+        if (mounted) setProfileLoading(false);
+        clearTimeout(timeout);
         return;
       }
 
@@ -258,11 +271,18 @@ export function useCrashGame({ initialSnapshot }: UseCrashGameOptions) {
         setBalance(loadDemoBalance());
       }
 
-      setProfileLoading(false);
+      const { points } = await fetchCrashHistory();
+      if (mounted && points.length) setCrashHistory(points);
+
+      if (mounted) {
+        setProfileLoading(false);
+        clearTimeout(timeout);
+      }
     })();
 
     return () => {
       mounted = false;
+      clearTimeout(timeout);
     };
   }, []);
 
@@ -273,7 +293,7 @@ export function useCrashGame({ initialSnapshot }: UseCrashGameOptions) {
       return;
     }
     if (
-      serverState?.phase !== "betting" ||
+      serverState.phase !== "betting" ||
       bettingSecondsLeft === null ||
       bettingSecondsLeft <= 0
     ) {
@@ -297,7 +317,7 @@ export function useCrashGame({ initialSnapshot }: UseCrashGameOptions) {
     }
 
     if (result.balance != null) setBalance(result.balance);
-    if (serverState?.round_id) await loadBets(serverState.round_id);
+    await loadBets(serverState.round_id);
     setMessage(`Mise de ${bet} jetons enregistrée !`);
     setTimeout(() => setMessage(null), 2000);
   }, [
@@ -307,15 +327,15 @@ export function useCrashGame({ initialSnapshot }: UseCrashGameOptions) {
     hasPlacedBet,
     isDemoMode,
     loadBets,
-    serverState?.phase,
-    serverState?.round_id,
+    serverState.phase,
+    serverState.round_id,
     userId,
   ]);
 
   const cashout = useCallback(async () => {
     if (
       !userId ||
-      serverState?.phase !== "flying" ||
+      serverState.phase !== "flying" ||
       !myBet ||
       myBet.status !== "active"
     ) {
@@ -346,12 +366,12 @@ export function useCrashGame({ initialSnapshot }: UseCrashGameOptions) {
       `Cashout ${formatMultiplier(finalMult)} · +${payout.toLocaleString("fr-FR")} jetons`
     );
 
-    if (serverState?.round_id) await loadBets(serverState.round_id);
-  }, [multiplier, myBet, serverState?.phase, serverState?.round_id, sounds, userId]);
+    await loadBets(serverState.round_id);
+  }, [multiplier, myBet, serverState.phase, serverState.round_id, sounds, userId]);
 
   const changeBet = useCallback(
     (delta: number) => {
-      if (serverState?.phase !== "betting" || hasPlacedBet) return;
+      if (serverState.phase !== "betting" || hasPlacedBet) return;
       const idx = CRASH_BET_OPTIONS.indexOf(
         bet as (typeof CRASH_BET_OPTIONS)[number]
       );
@@ -361,13 +381,13 @@ export function useCrashGame({ initialSnapshot }: UseCrashGameOptions) {
       );
       setBet(CRASH_BET_OPTIONS[next]);
     },
-    [bet, hasPlacedBet, serverState?.phase]
+    [bet, hasPlacedBet, serverState.phase]
   );
 
   const canPlaceBet =
     !!userId &&
     !isDemoMode &&
-    serverState?.phase === "betting" &&
+    serverState.phase === "betting" &&
     bettingSecondsLeft !== null &&
     bettingSecondsLeft > 0 &&
     !hasPlacedBet &&
@@ -376,7 +396,7 @@ export function useCrashGame({ initialSnapshot }: UseCrashGameOptions) {
     balance >= bet;
 
   const canCashout =
-    serverState?.phase === "flying" &&
+    serverState.phase === "flying" &&
     !!myBet &&
     myBet.status === "active" &&
     !cashedOutRef.current &&
@@ -408,7 +428,7 @@ export function useCrashGame({ initialSnapshot }: UseCrashGameOptions) {
     hasPlacedBet,
     hasCashedOut,
     connected: apiConnected,
-    roundNumber: serverState?.round_number ?? 0,
+    roundNumber: serverState.round_number ?? 0,
     profileLoading,
     isSyncing,
     profileError,

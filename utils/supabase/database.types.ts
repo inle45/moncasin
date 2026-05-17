@@ -153,6 +153,10 @@ export interface Database {
     };
     Views: Record<string, never>;
     Functions: {
+      crash_repair_live_state: {
+        Args: Record<string, never>;
+        Returns: undefined;
+      };
       crash_get_state: {
         Args: Record<string, never>;
         Returns: Json;

@@ -1,11 +1,80 @@
 import { parseCrashState } from "@/utils/crash/parse-state";
 import { createClient, safeQuery } from "./client";
-import type { CrashBetRow } from "@/utils/crash/types";
+import type { CrashBetRow, CrashPublicState } from "@/utils/crash/types";
 
 import { CRASH_BETTING_SECONDS } from "@/utils/crash/constants";
 
 export const CRASH_CHANNEL = "crash:global";
 export { CRASH_BETTING_SECONDS };
+
+type RpcResult<T> = { data: T | null; error: string | null };
+
+export async function fetchCrashState(): Promise<RpcResult<CrashPublicState>> {
+  const supabase = createClient();
+  if (!supabase) return { data: null, error: "Supabase non configuré" };
+
+  const { data: response, timedOut } = await safeQuery(
+    supabase.rpc("crash_get_state")
+  );
+
+  if (timedOut || !response) {
+    return { data: null, error: "Connexion expirée" };
+  }
+
+  const { data, error } = response as {
+    data: unknown;
+    error: { message: string } | null;
+  };
+  if (error) return { data: null, error: error.message };
+
+  const state = parseCrashState(data);
+  return state ? { data: state, error: null } : { data: null, error: "État invalide" };
+}
+
+export async function advanceCrashTick(): Promise<RpcResult<CrashPublicState>> {
+  const supabase = createClient();
+  if (!supabase) return { data: null, error: "Supabase non configuré" };
+
+  const { data: response, timedOut } = await safeQuery(
+    supabase.rpc("crash_advance_tick")
+  );
+
+  if (timedOut || !response) {
+    return { data: null, error: "Connexion expirée" };
+  }
+
+  const { data, error } = response as {
+    data: unknown;
+    error: { message: string } | null;
+  };
+  if (error) return { data: null, error: error.message };
+
+  return { data: parseCrashState(data), error: null };
+}
+
+/** Sync client de secours si /api/crash/loop échoue. */
+export async function syncCrashFromClient(
+  maxSteps = 8
+): Promise<RpcResult<CrashPublicState>> {
+  let lastError: string | null = null;
+
+  for (let i = 0; i < maxSteps; i++) {
+    const { data, error } = await advanceCrashTick();
+    if (error) {
+      lastError = error;
+      break;
+    }
+    if (data) {
+      const { data: fresh, error: getErr } = await fetchCrashState();
+      if (fresh && !getErr) return { data: fresh, error: null };
+      return { data, error: null };
+    }
+  }
+
+  const { data, error } = await fetchCrashState();
+  if (data) return { data, error: null };
+  return { data: null, error: lastError ?? error ?? "Sync impossible" };
+}
 
 export async function placeCrashBet(
   amount: number

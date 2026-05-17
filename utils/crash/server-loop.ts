@@ -1,18 +1,68 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
+import { createFallbackCrashState } from "@/utils/crash/default-state";
 import { parseCrashState } from "@/utils/crash/parse-state";
 import { serverStateNeedsAdvance } from "@/utils/crash/visual-state";
 import type { CrashBetRow, CrashPublicState } from "@/utils/crash/types";
 import type { Database } from "@/utils/supabase/database.types";
-import { createServiceClient } from "@/utils/supabase/admin";
+import { createCrashLoopClient } from "@/utils/supabase/crash-server";
 
-export const CRASH_LOOP_MAX_STEPS = 12;
+export const CRASH_LOOP_MAX_STEPS = 16;
 
 export interface CrashSnapshot {
-  state: CrashPublicState | null;
+  state: CrashPublicState;
   history: number[];
   bets: CrashBetRow[];
   serverTime: number;
   error: string | null;
+  source: "supabase" | "fallback";
+}
+
+function rowToState(row: Record<string, unknown>): CrashPublicState | null {
+  return parseCrashState({
+    round_id: row.round_id,
+    round_number: row.round_number,
+    phase: row.phase,
+    betting_ends_at: row.betting_ends_at,
+    flying_started_at: row.flying_started_at,
+    crashed_at: row.crashed_at,
+    crash_point: row.phase === "crashed" ? row.crash_point : null,
+  });
+}
+
+async function rpcRepair(supabase: SupabaseClient<Database>): Promise<void> {
+  try {
+    await supabase.rpc("crash_repair_live_state");
+  } catch {
+    /* fonction absente — bootstrap direct ci-dessous */
+  }
+}
+
+/** Réinitialise / répare la room via RPC (security definer, ne plante pas). */
+async function bootstrapCrashRoom(
+  supabase: SupabaseClient<Database>
+): Promise<void> {
+  await rpcRepair(supabase);
+
+  for (let i = 0; i < 4; i++) {
+    try {
+      await rpcAdvanceTick(supabase);
+    } catch {
+      break;
+    }
+  }
+}
+
+async function readStateDirect(
+  supabase: SupabaseClient<Database>
+): Promise<CrashPublicState | null> {
+  const { data, error } = await supabase
+    .from("crash_live_state")
+    .select("*")
+    .eq("id", 1)
+    .maybeSingle();
+
+  if (error || !data) return null;
+  return rowToState(data as Record<string, unknown>);
 }
 
 async function rpcGetState(
@@ -31,18 +81,43 @@ async function rpcAdvanceTick(
   return parseCrashState(data);
 }
 
-/** Avance la machine à états jusqu'à être à jour (service role). */
 export async function syncCrashLoop(
   supabase: SupabaseClient<Database>,
   maxSteps = CRASH_LOOP_MAX_STEPS
-): Promise<CrashPublicState | null> {
-  let state = await rpcGetState(supabase);
-  if (!state) return null;
+): Promise<CrashPublicState> {
+  await bootstrapCrashRoom(supabase);
+
+  let state: CrashPublicState | null = null;
+
+  try {
+    state = await rpcGetState(supabase);
+  } catch {
+    state = await readStateDirect(supabase);
+  }
+
+  if (!state) {
+    state = await readStateDirect(supabase);
+  }
+
+  if (!state) {
+    await bootstrapCrashRoom(supabase);
+    state = await readStateDirect(supabase);
+  }
+
+  if (!state) {
+    return createFallbackCrashState();
+  }
 
   for (let i = 0; i < maxSteps; i++) {
     if (!serverStateNeedsAdvance(state)) break;
 
-    const next = await rpcAdvanceTick(supabase);
+    let next: CrashPublicState | null = null;
+    try {
+      next = await rpcAdvanceTick(supabase);
+    } catch {
+      break;
+    }
+
     if (!next) break;
 
     const unchanged =
@@ -56,6 +131,15 @@ export async function syncCrashLoop(
     if (unchanged) break;
   }
 
+  if (serverStateNeedsAdvance(state)) {
+    try {
+      const forced = await rpcAdvanceTick(supabase);
+      if (forced) state = forced;
+    } catch {
+      /* garde l'état actuel */
+    }
+  }
+
   return state;
 }
 
@@ -63,69 +147,95 @@ async function fetchHistory(
   supabase: SupabaseClient<Database>,
   limit = 12
 ): Promise<number[]> {
-  const { data, error } = await supabase
-    .from("crash_round_history")
-    .select("crash_point")
-    .order("id", { ascending: false })
-    .limit(limit);
+  try {
+    const { data, error } = await supabase
+      .from("crash_round_history")
+      .select("crash_point")
+      .order("id", { ascending: false })
+      .limit(limit);
 
-  if (error) return [];
-  return (data ?? []).map((r) => Number(r.crash_point));
+    if (error) return [];
+    return (data ?? []).map((r) => Number(r.crash_point));
+  } catch {
+    return [];
+  }
 }
 
 async function fetchBets(
   supabase: SupabaseClient<Database>,
   roundId: string
 ): Promise<CrashBetRow[]> {
-  const { data, error } = await supabase
-    .from("crash_bets")
-    .select("*")
-    .eq("round_id", roundId)
-    .order("created_at", { ascending: true });
+  try {
+    const { data, error } = await supabase
+      .from("crash_bets")
+      .select("*")
+      .eq("round_id", roundId)
+      .order("created_at", { ascending: true });
 
-  if (error) return [];
-  return (data ?? []) as CrashBetRow[];
+    if (error) return [];
+    return (data ?? []) as CrashBetRow[];
+  } catch {
+    return [];
+  }
 }
 
 export async function runCrashSnapshot(options?: {
-  roundId?: string | null;
   maxSteps?: number;
 }): Promise<CrashSnapshot> {
-  const supabase = createServiceClient();
   const serverTime = Date.now();
+  const supabase = createCrashLoopClient();
 
   if (!supabase) {
     return {
-      state: null,
+      state: createFallbackCrashState(serverTime),
       history: [],
       bets: [],
       serverTime,
-      error:
-        "SUPABASE_SERVICE_ROLE_KEY manquant — configure la clé sur Vercel.",
+      error: "Clés Supabase manquantes sur le serveur",
+      source: "fallback",
     };
   }
 
   try {
     const state = await syncCrashLoop(supabase, options?.maxSteps);
     const history = await fetchHistory(supabase);
-    const bets = state?.round_id
-      ? await fetchBets(supabase, state.round_id)
-      : [];
+    const bets = await fetchBets(supabase, state.round_id);
 
-    return { state, history, bets, serverTime, error: null };
+    return {
+      state,
+      history,
+      bets,
+      serverTime,
+      error: null,
+      source: "supabase",
+    };
   } catch (err) {
     const message = err instanceof Error ? err.message : "Erreur serveur Crash";
-    return {
-      state: null,
-      history: [],
-      bets: [],
-      serverTime,
-      error: message,
-    };
+
+    try {
+      await bootstrapCrashRoom(supabase);
+      const state = await syncCrashLoop(supabase, options?.maxSteps);
+      return {
+        state,
+        history: await fetchHistory(supabase),
+        bets: await fetchBets(supabase, state.round_id),
+        serverTime,
+        error: message,
+        source: "supabase",
+      };
+    } catch {
+      return {
+        state: createFallbackCrashState(serverTime),
+        history: [],
+        bets: [],
+        serverTime,
+        error: message,
+        source: "fallback",
+      };
+    }
   }
 }
 
-/** Initialisation côté serveur (page /crash). */
 export async function fetchCrashSnapshotServer(): Promise<CrashSnapshot> {
   return runCrashSnapshot();
 }

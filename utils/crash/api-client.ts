@@ -1,8 +1,7 @@
 import type { CrashSnapshot } from "@/utils/crash/server-loop";
+import { createFallbackCrashState } from "@/utils/crash/default-state";
 
-const LOOP_POLL_MS = 1000;
-
-export { LOOP_POLL_MS };
+export const LOOP_POLL_MS = 800;
 
 export async function fetchCrashLoop(
   roundId?: string | null
@@ -13,22 +12,42 @@ export async function fetchCrashLoop(
   const qs = params.toString();
   const url = `/api/crash/loop${qs ? `?${qs}` : ""}`;
 
-  const res = await fetch(url, {
-    method: "GET",
-    cache: "no-store",
-    headers: { Accept: "application/json" },
-  });
+  try {
+    const res = await fetch(url, {
+      method: "GET",
+      cache: "no-store",
+      headers: { Accept: "application/json" },
+    });
 
-  if (!res.ok) {
-    const body = (await res.json().catch(() => ({}))) as { error?: string };
+    const json = (await res.json()) as CrashSnapshot & { error?: string };
+
+    if (json.state) {
+      return {
+        state: json.state,
+        history: json.history ?? [],
+        bets: json.bets ?? [],
+        serverTime: json.serverTime ?? Date.now(),
+        error: json.error ?? null,
+        source: json.source ?? "supabase",
+      };
+    }
+
     return {
-      state: null,
+      state: createFallbackCrashState(),
       history: [],
       bets: [],
       serverTime: Date.now(),
-      error: body.error ?? `HTTP ${res.status}`,
+      error: json.error ?? `HTTP ${res.status}`,
+      source: "fallback",
+    };
+  } catch (err) {
+    return {
+      state: createFallbackCrashState(),
+      history: [],
+      bets: [],
+      serverTime: Date.now(),
+      error: err instanceof Error ? err.message : "Réseau",
+      source: "fallback",
     };
   }
-
-  return (await res.json()) as CrashSnapshot;
 }
