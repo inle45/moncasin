@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import type { User } from "@supabase/supabase-js";
-import { createClient, DEMO_MODE, safeGetUser } from "@/utils/supabase/client";
+import { createClient, DEMO_MODE } from "@/utils/supabase/client";
 import { isDemoMode } from "@/utils/supabase/config";
 import { fetchProfile } from "@/utils/supabase/profiles";
 
@@ -28,11 +28,20 @@ export function useAuth() {
 
     let mounted = true;
 
-    async function init() {
-      const { user: currentUser } = await safeGetUser();
+    const supabase = createClient();
+    if (!supabase) {
+      setLoading(false);
+      return;
+    }
+
+    void (async () => {
+      const {
+        data: { session },
+      } = await supabase.auth.getSession();
 
       if (!mounted) return;
 
+      const currentUser = session?.user ?? null;
       setUser(currentUser);
       if (currentUser) {
         await loadUserProfile(currentUser.id);
@@ -40,19 +49,11 @@ export function useAuth() {
         setUsername(null);
       }
       setLoading(false);
-    }
-
-    init();
-
-    const supabase = createClient();
-    if (!supabase) {
-      setLoading(false);
-      return;
-    }
+    })();
 
     const {
       data: { subscription },
-    } = supabase.auth.onAuthStateChange(async (_event, session) => {
+    } = supabase.auth.onAuthStateChange(async (event, session) => {
       if (!mounted) return;
 
       const nextUser = session?.user ?? null;
@@ -60,7 +61,7 @@ export function useAuth() {
 
       if (nextUser) {
         await loadUserProfile(nextUser.id);
-      } else {
+      } else if (event === "SIGNED_OUT") {
         setUsername(null);
       }
       setLoading(false);

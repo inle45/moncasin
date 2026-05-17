@@ -114,12 +114,7 @@ export async function signInWithEmail(
   password: string
 ): Promise<AuthOperationResult> {
   const configResult = configFailure();
-  if (configResult) {
-    if (configResult.error) {
-      alert(JSON.stringify(configResult.error));
-    }
-    return configResult;
-  }
+  if (configResult) return configResult;
 
   const supabase = createClient();
   if (!supabase) {
@@ -130,7 +125,6 @@ export async function signInWithEmail(
       name: "ClientUnavailable",
       status: 503,
     };
-    alert(JSON.stringify(err));
     const details = extractAuthErrorDetails(err, { isConfig: true });
     return {
       data: { user: null, session: null },
@@ -143,7 +137,6 @@ export async function signInWithEmail(
     const result = await supabase.auth.signInWithPassword({ email, password });
 
     if (result.error) {
-      alert(JSON.stringify(result.error));
       return {
         data: result.data,
         error: result.error,
@@ -153,7 +146,6 @@ export async function signInWithEmail(
 
     return { data: result.data, error: null, details: null };
   } catch (error) {
-    alert(JSON.stringify(error));
     const details = extractAuthErrorDetails(error);
     return {
       data: { user: null, session: null },

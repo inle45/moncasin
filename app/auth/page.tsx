@@ -2,7 +2,6 @@
 
 import { useEffect, useState } from "react";
 import Link from "next/link";
-import { useRouter } from "next/navigation";
 import { AuthTabs, type AuthTab } from "@/components/auth/AuthTabs";
 import { LoginForm } from "@/components/auth/LoginForm";
 import { SignupForm } from "@/components/auth/SignupForm";
@@ -18,7 +17,6 @@ import type { AuthErrorDetails } from "@/utils/supabase/auth-errors";
 import { cn } from "@/utils/cn";
 
 export default function AuthPage() {
-  const router = useRouter();
   const { isAuthenticated, loading: authLoading } = useAuth();
   const [tab, setTab] = useState<AuthTab>("login");
   const [submitting, setSubmitting] = useState(false);
@@ -33,17 +31,19 @@ export default function AuthPage() {
 
   useEffect(() => {
     if (!authLoading && isAuthenticated) {
-      router.replace("/");
+      window.location.href = "/crash";
     }
-  }, [authLoading, isAuthenticated, router]);
+  }, [authLoading, isAuthenticated]);
 
-  const handleSuccess = (successMessage?: string) => {
+  const handleSuccess = (successMessage?: string, skipRedirect = false) => {
     setAuthError(null);
     setMessage({
       type: "success",
       text: successMessage ?? "Connexion réussie ! Redirection…",
     });
-    setTimeout(() => router.replace("/"), 800);
+    if (!skipRedirect) {
+      window.location.href = "/crash";
+    }
   };
 
   const handleError = (details: AuthErrorDetails) => {

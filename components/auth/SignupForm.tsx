@@ -7,7 +7,7 @@ import type { AuthErrorDetails } from "@/utils/supabase/auth-errors";
 import { cn } from "@/utils/cn";
 
 interface SignupFormProps {
-  onSuccess: (message: string) => void;
+  onSuccess: (message: string, skipRedirect?: boolean) => void;
   onError: (details: AuthErrorDetails) => void;
   onLoadingChange: (loading: boolean) => void;
 }
@@ -75,7 +75,8 @@ export function SignupForm({
       onSuccess("Compte créé avec succès ! Bienvenue sur MonCasin.fr 🎰");
     } else {
       onSuccess(
-        "Compte créé ! Vérifie ta boîte mail pour confirmer ton inscription."
+        "Compte créé ! Vérifie ta boîte mail pour confirmer ton inscription.",
+        true
       );
     }
   }

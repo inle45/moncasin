@@ -18,7 +18,7 @@ import {
 import { createFallbackCrashState } from "@/utils/crash/default-state";
 import type { CrashBetRow, CrashPhase, CrashPublicState } from "@/utils/crash/types";
 import { INITIAL_BALANCE } from "@/utils/slot/constants";
-import { createClient, safeGetUser } from "@/utils/supabase/client";
+import { createClient } from "@/utils/supabase/client";
 import { isDemoMode, isSupabaseConfigured } from "@/utils/supabase/config";
 import {
   CRASH_CHANNEL,
@@ -139,28 +139,56 @@ export function useCrashGame() {
     setIsSyncing(false);
   }, [applyServerState, reloadBets]);
 
-  // Profil : solde local immédiat puis remplacement discret
+  // Session + solde : affichage local immédiat, sync via onAuthStateChange
   useEffect(() => {
     if (isDemoMode()) return;
 
+    const supabase = createClient();
+    if (!supabase) return;
+
     let cancelled = false;
-    void (async () => {
-      const { user } = await safeGetUser();
-      if (cancelled || !user) return;
 
-      userIdRef.current = user.id;
-      setUserId(user.id);
+    const applyUser = async (uid: string | null) => {
+      if (cancelled) return;
 
-      const { profile, error } = await fetchProfile(user.id);
+      if (!uid) {
+        userIdRef.current = null;
+        setUserId(null);
+        setHasPlacedBet(false);
+        setHasCashedOut(false);
+        setProfileError(null);
+        setBalanceTracked(INITIAL_BALANCE);
+        return;
+      }
+
+      userIdRef.current = uid;
+      setUserId(uid);
+      setProfileError(null);
+
+      const { profile, error } = await fetchProfile(uid);
       if (cancelled) return;
       if (error) setProfileError(error);
-      if (profile) setBalanceTracked(Math.max(0, Math.floor(Number(profile.balance))));
-    })();
+      if (profile) {
+        setBalanceTracked(Math.max(0, Math.floor(Number(profile.balance))));
+      }
+      void reloadBets();
+    };
+
+    void supabase.auth.getSession().then(({ data: { session } }) => {
+      void applyUser(session?.user?.id ?? null);
+    });
+
+    const {
+      data: { subscription },
+    } = supabase.auth.onAuthStateChange((_event, session) => {
+      void applyUser(session?.user?.id ?? null);
+    });
 
     return () => {
       cancelled = true;
+      subscription.unsubscribe();
     };
-  }, [setBalanceTracked]);
+  }, [setBalanceTracked, reloadBets]);
 
   // Bootstrap + Realtime
   useEffect(() => {
