@@ -43,7 +43,7 @@ export default function CrashPage() {
       )}
     >
       <p className="px-4 pt-2 text-center text-[9px] font-bold uppercase tracking-widest text-emerald-400/90">
-        Mode secours actif · build local
+        Mode secours v3 · 59262f9
       </p>
 
       <CrashHeader balance={balance} isLoading={false} />
