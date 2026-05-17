@@ -39,18 +39,6 @@ export function deriveVisualState(
   const crashedAt = parseIsoMs(server.crashed_at);
 
   if (server.phase === "betting") {
-    if (bettingEnd !== null && now >= bettingEnd) {
-      const elapsed = now - bettingEnd;
-      return {
-        phase: "flying",
-        multiplier: multiplierAtElapsedMs(elapsed),
-        bettingSecondsLeft: null,
-        flyingStartedAt: new Date(bettingEnd).toISOString(),
-        crashPoint: null,
-        awaitingServerSync: true,
-      };
-    }
-
     const left =
       bettingEnd === null
         ? null
@@ -86,24 +74,13 @@ export function deriveVisualState(
 
   if (server.phase === "crashed") {
     const point = server.crash_point ?? 1;
-    if (crashedAt !== null && now < crashedAt + CRASH_DISPLAY_MS) {
-      return {
-        phase: "crashed",
-        multiplier: point,
-        bettingSecondsLeft: null,
-        flyingStartedAt: server.flying_started_at,
-        crashPoint: point,
-        awaitingServerSync: false,
-      };
-    }
-
     return {
-      phase: "betting",
-      multiplier: 1,
+      phase: "crashed",
+      multiplier: point,
       bettingSecondsLeft: null,
-      flyingStartedAt: null,
+      flyingStartedAt: server.flying_started_at,
       crashPoint: point,
-      awaitingServerSync: true,
+      awaitingServerSync: crashedAt === null,
     };
   }
 

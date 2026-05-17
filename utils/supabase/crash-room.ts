@@ -83,15 +83,13 @@ export async function advanceCrashTick(): Promise<RpcResult<CrashPublicState>> {
     error: { message: string } | null;
   };
   if (error) {
-    const fallback = await fetchCrashStateFromTable();
-    if (fallback.data) return fallback;
     return { data: null, error: error.message };
   }
 
   const parsed = parseCrashState(data);
   if (parsed) return { data: parsed, error: null };
 
-  return fetchCrashStateFromTable();
+  return { data: null, error: "Réponse crash_advance_tick invalide" };
 }
 
 /** Sync client de secours si /api/crash/loop échoue. */

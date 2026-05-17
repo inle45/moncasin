@@ -1,7 +1,10 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { advanceCrashFromClient } from "@/utils/crash/advance-client";
+import {
+  crashStateSignature,
+  runCrashLoopTick,
+} from "@/utils/crash/advance-client";
 import {
   CRASH_BET_OPTIONS,
   DEFAULT_CRASH_BET,
@@ -20,7 +23,6 @@ import { createClient } from "@/utils/supabase/client";
 import { isDemoMode, isSupabaseConfigured } from "@/utils/supabase/config";
 import {
   CRASH_CHANNEL,
-  advanceCrashTick,
   cashoutCrash,
   fetchCrashHistory,
   fetchCrashState,
@@ -76,11 +78,19 @@ export function useCrashGame() {
 
   const applyServerState = useCallback((state: CrashPublicState) => {
     const prevRound = roundIdRef.current;
+    const prevSig = serverStateRef.current
+      ? crashStateSignature(serverStateRef.current)
+      : "";
+    const nextSig = crashStateSignature(state);
+
     serverStateRef.current = state;
-    setServerState(state);
-    setRoundNumber(state.round_number);
     setUseFallback(false);
     lastRealtimeAtRef.current = Date.now();
+
+    if (nextSig !== prevSig) {
+      setServerState(state);
+      setRoundNumber(state.round_number);
+    }
 
     if (state.round_id && state.round_id !== prevRound) {
       roundIdRef.current = state.round_id;
@@ -138,7 +148,7 @@ export function useCrashGame() {
       applyServerState(state);
       await reloadBets(state.round_id);
     } else if (state) {
-      const advanced = await advanceCrashFromClient();
+      const advanced = await runCrashLoopTick();
       if (advanced?.round_id) {
         applyServerState(advanced);
         await reloadBets(advanced.round_id);
@@ -318,8 +328,8 @@ export function useCrashGame() {
   }, [useFallback, refreshServerState]);
 
   /**
-   * Moteur multijoueur : le navigateur appelle crash_advance_tick en continu.
-   * La RPC est idempotente (rien ne change tant que la phase n'est pas expirée).
+   * Boucle multijoueur côté client (pas de cron Vercel) :
+   * crash_advance_tick toutes les 500ms → API /api/crash/loop si RPC échoue.
    */
   useEffect(() => {
     if (!isSupabaseConfigured() || isDemoMode()) return;
@@ -332,16 +342,8 @@ export function useCrashGame() {
           await refreshServerState();
         }
 
-        const { data, error } = await advanceCrashTick();
-        if (data) {
-          applyServerState(data);
-          return;
-        }
-
-        if (error) {
-          const fallback = await advanceCrashFromClient();
-          if (fallback) applyServerState(fallback);
-        }
+        const next = await runCrashLoopTick();
+        if (next) applyServerState(next);
       } finally {
         advancingRef.current = false;
       }

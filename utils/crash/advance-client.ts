@@ -5,20 +5,46 @@ import {
   fetchCrashStateFromTable,
 } from "@/utils/supabase/crash-room";
 
-/** Avance la manche via RPC, puis relit la table / API loop. */
-export async function advanceCrashFromClient(): Promise<CrashPublicState | null> {
-  const { data, error } = await advanceCrashTick();
-  if (data && !error) return data;
+/** Signature stable pour éviter les re-renders inutiles (chrono 4↔3). */
+export function crashStateSignature(state: CrashPublicState): string {
+  return [
+    state.phase,
+    state.round_id,
+    state.round_number,
+    state.betting_ends_at ?? "",
+    state.flying_started_at ?? "",
+    state.crashed_at ?? "",
+    state.crash_point ?? "",
+  ].join("|");
+}
 
-  const fromTable = await fetchCrashStateFromTable();
-  if (fromTable.data) return fromTable.data;
+/**
+ * Avance la manche : RPC client → API serveur (/api/crash/loop) → lecture table.
+ * La lecture seule ne fait PAS avancer la DB (évite la boucle chrono).
+ */
+export async function runCrashLoopTick(): Promise<CrashPublicState | null> {
+  const rpc = await advanceCrashTick();
+  if (rpc.data && !rpc.error) return rpc.data;
 
   try {
-    const res = await fetch("/api/crash/loop", { cache: "no-store" });
-    if (!res.ok) return fromTable.data;
-    const body = (await res.json()) as { state?: unknown };
-    return parseCrashState(body.state) ?? fromTable.data;
+    const res = await fetch("/api/crash/loop", {
+      cache: "no-store",
+      method: "GET",
+    });
+    if (res.ok) {
+      const body = (await res.json()) as { state?: unknown };
+      const fromApi = parseCrashState(body.state);
+      if (fromApi) return fromApi;
+    }
   } catch {
-    return fromTable.data;
+    /* réseau */
   }
+
+  const table = await fetchCrashStateFromTable();
+  return table.data;
+}
+
+/** @deprecated Utiliser runCrashLoopTick */
+export async function advanceCrashFromClient(): Promise<CrashPublicState | null> {
+  return runCrashLoopTick();
 }
