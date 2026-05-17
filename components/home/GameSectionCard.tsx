@@ -4,7 +4,12 @@ import Link from "next/link";
 import { cn } from "@/utils/cn";
 import type { ReactNode } from "react";
 
-export type GameSectionId = "slot" | "leaderboard" | "vip-shop" | "daily-wheel";
+export type GameSectionId =
+  | "slot"
+  | "crash"
+  | "leaderboard"
+  | "vip-shop"
+  | "daily-wheel";
 
 interface GameSectionCardProps {
   id: GameSectionId;

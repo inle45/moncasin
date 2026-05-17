@@ -52,6 +52,27 @@ export function VipShopIcon({ className }: { className?: string }) {
   );
 }
 
+export function CrashIcon({ className }: { className?: string }) {
+  return (
+    <svg
+      className={className}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.5"
+      aria-hidden
+    >
+      <path
+        d="M4 18c4-8 8-12 12-14 4 2 4 6 4 14"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+      <path d="M14 4l4 2-2 4" strokeLinecap="round" strokeLinejoin="round" />
+      <circle cx="18" cy="6" r="1.5" fill="currentColor" />
+    </svg>
+  );
+}
+
 export function WheelIcon({ className }: { className?: string }) {
   return (
     <svg

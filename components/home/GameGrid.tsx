@@ -1,5 +1,6 @@
 import { GameSectionCard } from "./GameSectionCard";
 import {
+  CrashIcon,
   SlotIcon,
   LeaderboardIcon,
   VipShopIcon,
@@ -15,6 +16,15 @@ const SECTIONS = [
     accent: "purple" as const,
     icon: SlotIcon,
     badge: "Hot",
+  },
+  {
+    id: "crash" as const,
+    title: "Crash Neon",
+    subtitle: "Fusée · Cashout · Multiplicateur live",
+    href: "/crash",
+    accent: "gold" as const,
+    icon: CrashIcon,
+    badge: "Nouveau",
   },
   {
     id: "leaderboard" as const,
