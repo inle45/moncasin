@@ -25,6 +25,7 @@ import {
   cashoutCrash,
   fetchCrashHistory,
   fetchCrashState,
+  fetchCrashStateFromTable,
   fetchRoundBets,
   placeCrashBet,
 } from "@/utils/supabase/crash-room";
@@ -34,7 +35,8 @@ export type { CrashPhase };
 
 const TICK_PILOT_MS = 450;
 const VISUAL_TICK_MS = 50;
-const REALTIME_STALE_MS = 12_000;
+const REALTIME_STALE_MS = 30_000;
+const STATE_POLL_MS = 3_000;
 
 export function useCrashGame() {
   const serverStateRef = useRef<CrashPublicState | null>(null);
@@ -76,6 +78,8 @@ export function useCrashGame() {
     serverStateRef.current = state;
     setServerState(state);
     setRoundNumber(state.round_number);
+    setUseFallback(false);
+    lastRealtimeAtRef.current = Date.now();
 
     if (state.round_id && state.round_id !== prevRound) {
       roundIdRef.current = state.round_id;
@@ -83,7 +87,7 @@ export function useCrashGame() {
       setCurvePoints([1]);
       setHasPlacedBet(false);
       setHasCashedOut(false);
-    } else if (!roundIdRef.current && state.round_id) {
+    } else if (state.round_id) {
       roundIdRef.current = state.round_id;
     }
   }, []);
@@ -103,6 +107,17 @@ export function useCrashGame() {
     }
   }, []);
 
+  const refreshServerState = useCallback(async () => {
+    const { data, error } = await fetchCrashStateFromTable();
+    if (data) {
+      applyServerState(data);
+      await reloadBets(data.round_id);
+      return data;
+    }
+    if (error) setProfileError(error);
+    return null;
+  }, [applyServerState, reloadBets]);
+
   const bootstrap = useCallback(async () => {
     if (!isSupabaseConfigured() || isDemoMode()) {
       setUseFallback(true);
@@ -120,24 +135,22 @@ export function useCrashGame() {
 
     if (state) {
       applyServerState(state);
-      roundIdRef.current = state.round_id;
-      lastRealtimeAtRef.current = Date.now();
       await reloadBets(state.round_id);
 
       if (serverStateNeedsAdvance(state)) {
         const advanced = await advanceCrashFromClient();
-        if (advanced) {
-          applyServerState(advanced);
-          lastRealtimeAtRef.current = Date.now();
-        }
+        if (advanced) applyServerState(advanced);
       }
-    } else if (error) {
-      setUseFallback(true);
-      setProfileError(error);
+    } else {
+      const retried = await refreshServerState();
+      if (!retried) {
+        setUseFallback(true);
+        if (error) setProfileError(error);
+      }
     }
 
     setIsSyncing(false);
-  }, [applyServerState, reloadBets]);
+  }, [applyServerState, reloadBets, refreshServerState]);
 
   // Session + solde : affichage local immédiat, sync via onAuthStateChange
   useEffect(() => {
@@ -221,9 +234,11 @@ export function useCrashGame() {
           const state = liveStateRowToPublic(
             payload.new as Record<string, unknown>
           );
-          if (state) {
+          if (state?.round_id) {
             applyServerState(state);
-            setUseFallback(false);
+            void reloadBets(state.round_id);
+          } else {
+            void refreshServerState();
           }
         }
       )
@@ -244,6 +259,7 @@ export function useCrashGame() {
           setRealtimeConnected(true);
           setUseFallback(false);
           lastRealtimeAtRef.current = Date.now();
+          void refreshServerState();
         }
         if (
           status === "CHANNEL_ERROR" ||
@@ -261,9 +277,21 @@ export function useCrashGame() {
     return () => {
       void supabase.removeChannel(channel);
     };
-  }, [applyServerState, bootstrap, reloadBets]);
+  }, [applyServerState, bootstrap, reloadBets, refreshServerState]);
 
-  // Détection Realtime stale → fallback local fluide
+  // Poll de secours si Realtime ne pousse pas d'événement
+  useEffect(() => {
+    if (!isSupabaseConfigured() || isDemoMode()) return;
+
+    const id = setInterval(() => {
+      if (serverStateRef.current?.round_id) return;
+      void refreshServerState();
+    }, STATE_POLL_MS);
+
+    return () => clearInterval(id);
+  }, [refreshServerState]);
+
+  // Détection Realtime stale → re-fetch puis fallback local si échec
   useEffect(() => {
     if (useFallback) return;
 
@@ -272,41 +300,47 @@ export function useCrashGame() {
         lastRealtimeAtRef.current > 0 &&
         Date.now() - lastRealtimeAtRef.current > REALTIME_STALE_MS
       ) {
-        setUseFallback(true);
-        setRealtimeConnected(false);
-        if (!fallbackSimRef.current) {
-          fallbackSimRef.current = new LocalCrashSimulator();
-        }
+        void refreshServerState().then((state) => {
+          if (!state) {
+            setUseFallback(true);
+            setRealtimeConnected(false);
+            if (!fallbackSimRef.current) {
+              fallbackSimRef.current = new LocalCrashSimulator();
+            }
+          }
+        });
       }
-    }, 2000);
+    }, 5000);
 
     return () => clearInterval(id);
-  }, [useFallback]);
+  }, [useFallback, refreshServerState]);
 
-  // Pilote de boucle : le client actif avance la manche si elle est expirée
+  // Pilote de boucle : avance crash_advance_tick si la manche est expirée
   useEffect(() => {
-    if (useFallback || !isSupabaseConfigured() || isDemoMode()) return;
+    if (!isSupabaseConfigured() || isDemoMode()) return;
 
     const id = setInterval(() => {
-      const state = serverStateRef.current;
-      if (!state || !serverStateNeedsAdvance(state)) return;
-      if (advancingRef.current) return;
+      void (async () => {
+        let state = serverStateRef.current;
+        if (!state?.round_id) {
+          state = await refreshServerState();
+          if (!state) return;
+        }
 
-      advancingRef.current = true;
-      void advanceCrashFromClient()
-        .then((next) => {
-          if (next) {
-            applyServerState(next);
-            lastRealtimeAtRef.current = Date.now();
-          }
-        })
-        .finally(() => {
+        if (!serverStateNeedsAdvance(state) || advancingRef.current) return;
+
+        advancingRef.current = true;
+        try {
+          const next = await advanceCrashFromClient();
+          if (next) applyServerState(next);
+        } finally {
           advancingRef.current = false;
-        });
+        }
+      })();
     }, TICK_PILOT_MS);
 
     return () => clearInterval(id);
-  }, [useFallback, applyServerState]);
+  }, [applyServerState, refreshServerState]);
 
   // Rafraîchissement visuel 50ms (serveur dérivé ou simulateur local)
   useEffect(() => {
@@ -443,7 +477,10 @@ export function useCrashGame() {
     : undefined;
   const activeBet = myBet?.bet_amount ?? 0;
 
-  const multiplayerLive = realtimeConnected && !useFallback && !!serverState;
+  const hasLiveRound = Boolean(
+    serverState?.round_id || roundIdRef.current
+  );
+  const multiplayerLive = hasLiveRound && !useFallback;
   const demo = isDemoMode() || !userId;
 
   return {
@@ -467,14 +504,15 @@ export function useCrashGame() {
     bettingSecondsLeft,
     chronoReady:
       useFallback ||
-      (serverState !== null &&
+      (hasLiveRound &&
+        serverState !== null &&
         !deriveVisualState(serverState, Date.now()).awaitingServerSync),
     roundBets,
     presence: [],
     activePlayersCount: Math.max(activePlayersCount, roundBets.length > 0 ? roundBets.length : 0),
     hasPlacedBet,
     hasCashedOut,
-    connected: multiplayerLive,
+    connected: multiplayerLive || realtimeConnected,
     roundNumber,
     profileLoading: false,
     isSyncing,

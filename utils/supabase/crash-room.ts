@@ -1,3 +1,4 @@
+import { liveStateRowToPublic } from "@/utils/crash/live-state";
 import { parseCrashState } from "@/utils/crash/parse-state";
 import { createClient, safeQuery } from "./client";
 import type { CrashBetRow, CrashPublicState } from "@/utils/crash/types";
@@ -9,16 +10,46 @@ export { CRASH_BETTING_SECONDS };
 
 type RpcResult<T> = { data: T | null; error: string | null };
 
-export async function fetchCrashState(): Promise<RpcResult<CrashPublicState>> {
+/** Lecture directe de la table (fiable si le cache RPC PostgREST est en retard). */
+export async function fetchCrashStateFromTable(): Promise<
+  RpcResult<CrashPublicState>
+> {
   const supabase = createClient();
   if (!supabase) return { data: null, error: "Supabase non configuré" };
+
+  const { data: response, timedOut } = await safeQuery(
+    supabase.from("crash_live_state").select("*").eq("id", 1).maybeSingle()
+  );
+
+  if (timedOut || !response) {
+    return { data: null, error: "Connexion expirée" };
+  }
+
+  const { data, error } = response as {
+    data: Record<string, unknown> | null;
+    error: { message: string } | null;
+  };
+
+  if (error) return { data: null, error: error.message };
+  if (!data) return { data: null, error: "Room crash introuvable (id=1)" };
+
+  const state = liveStateRowToPublic(data);
+  return state ? { data: state, error: null } : { data: null, error: "État invalide" };
+}
+
+export async function fetchCrashState(): Promise<RpcResult<CrashPublicState>> {
+  const fromTable = await fetchCrashStateFromTable();
+  if (fromTable.data) return fromTable;
+
+  const supabase = createClient();
+  if (!supabase) return fromTable;
 
   const { data: response, timedOut } = await safeQuery(
     supabase.rpc("crash_get_state")
   );
 
   if (timedOut || !response) {
-    return { data: null, error: "Connexion expirée" };
+    return { data: null, error: fromTable.error ?? "Connexion expirée" };
   }
 
   const { data, error } = response as {
@@ -28,7 +59,7 @@ export async function fetchCrashState(): Promise<RpcResult<CrashPublicState>> {
   if (error) return { data: null, error: error.message };
 
   const state = parseCrashState(data);
-  return state ? { data: state, error: null } : { data: null, error: "État invalide" };
+  return state ? { data: state, error: null } : fromTable;
 }
 
 export async function advanceCrashTick(): Promise<RpcResult<CrashPublicState>> {
@@ -47,9 +78,16 @@ export async function advanceCrashTick(): Promise<RpcResult<CrashPublicState>> {
     data: unknown;
     error: { message: string } | null;
   };
-  if (error) return { data: null, error: error.message };
+  if (error) {
+    const fallback = await fetchCrashStateFromTable();
+    if (fallback.data) return fallback;
+    return { data: null, error: error.message };
+  }
 
-  return { data: parseCrashState(data), error: null };
+  const parsed = parseCrashState(data);
+  if (parsed) return { data: parsed, error: null };
+
+  return fetchCrashStateFromTable();
 }
 
 /** Sync client de secours si /api/crash/loop échoue. */
