@@ -33,8 +33,8 @@ export function normalizeAnonKey(key: string): string {
 }
 
 function isValidAnonKeyFormat(key: string): boolean {
-  if (key.startsWith("eyJ") && key.length >= 100) return true;
-  if (key.startsWith("sb_publishable_") && key.length >= 45) return true;
+  if (key.startsWith("eyJ") && key.length >= 80) return true;
+  if (key.startsWith("sb_publishable_") && key.length >= 32) return true;
   return false;
 }
 

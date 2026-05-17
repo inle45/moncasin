@@ -1,155 +1,135 @@
+import type { AuthError, Session, User } from "@supabase/supabase-js";
 import { createClient } from "./client";
 import { isDemoMode } from "./config";
 import { getBrowserClientConfigError } from "./env";
+import {
+  extractAuthErrorDetails,
+  type AuthErrorDetails,
+} from "./auth-errors";
 import { RequestTimeoutError, withTimeout } from "./timeout";
 
-const AUTH_TIMEOUT_MS = 15000;
+const AUTH_TIMEOUT_MS = 30000;
 
-export function translateAuthError(message: string): string {
-  const lower = message.toLowerCase();
-
-  if (lower.includes("invalid login credentials")) {
-    return "Identifiants incorrects. Vérifie ton email et ton mot de passe.";
-  }
-  if (lower.includes("user already registered")) {
-    return "Un compte existe déjà avec cet email.";
-  }
-  if (lower.includes("password should be at least")) {
-    return "Le mot de passe doit contenir au moins 6 caractères.";
-  }
-  if (lower.includes("unable to validate email")) {
-    return "Adresse email invalide.";
-  }
-  if (lower.includes("signup is disabled")) {
-    return "Les inscriptions sont temporairement désactivées.";
-  }
-  if (lower.includes("email not confirmed")) {
-    return "Confirme ton email avant de te connecter.";
-  }
-  if (lower.includes("failed to fetch") || lower.includes("network")) {
-    return "Impossible de joindre Supabase. Vérifie ta connexion et les variables NEXT_PUBLIC_* sur Vercel.";
-  }
-  if (lower.includes("invalid") && lower.includes("api key")) {
-    return "Clé API Supabase invalide. Utilise la clé « anon » ou « publishable » (sb_publishable_… ou eyJ…) dans NEXT_PUBLIC_SUPABASE_ANON_KEY — pas la service_role.";
-  }
-
-  return message;
-}
-
-const DEMO_AUTH_ERROR = {
-  message:
-    "Mode démo actif : configure NEXT_PUBLIC_SUPABASE_URL et NEXT_PUBLIC_SUPABASE_ANON_KEY dans .env.local pour activer l'authentification.",
+export type AuthOperationResult = {
+  data: {
+    user: User | null;
+    session: Session | null;
+  };
+  error: AuthError | null;
+  details: AuthErrorDetails | null;
 };
 
-function authConfigError() {
-  if (isDemoMode()) return DEMO_AUTH_ERROR;
-  return getBrowserClientConfigError()
-    ? { message: getBrowserClientConfigError()! }
-    : null;
-}
+const DEMO_DETAILS: AuthErrorDetails = {
+  message:
+    "Mode démo actif : configure NEXT_PUBLIC_SUPABASE_URL et NEXT_PUBLIC_SUPABASE_ANON_KEY.",
+  isTimeout: false,
+  isConfig: true,
+  raw: JSON.stringify({ mode: "demo" }, null, 2),
+};
 
-export async function signInWithEmail(email: string, password: string) {
-  const configErr = authConfigError();
-  if (configErr) {
+function configFailure(): AuthOperationResult | null {
+  if (isDemoMode()) {
     return {
       data: { user: null, session: null },
-      error: configErr,
-    } as const;
+      error: { message: DEMO_DETAILS.message, name: "DemoMode", status: 503 } as AuthError,
+      details: DEMO_DETAILS,
+    };
   }
+
+  const configMsg = getBrowserClientConfigError();
+  if (configMsg) {
+    const details = extractAuthErrorDetails(
+      { message: configMsg, name: "ConfigError", status: 503 },
+      { isConfig: true }
+    );
+    return {
+      data: { user: null, session: null },
+      error: { message: configMsg, name: "ConfigError", status: 503 } as AuthError,
+      details,
+    };
+  }
+
+  return null;
+}
+
+async function runAuthOperation(
+  label: string,
+  operation: (
+    supabase: NonNullable<ReturnType<typeof createClient>>
+  ) => Promise<{
+    data: { user: User | null; session: Session | null };
+    error: AuthError | null;
+  }>
+): Promise<AuthOperationResult> {
+  const configResult = configFailure();
+  if (configResult) return configResult;
 
   const supabase = createClient();
   if (!supabase) {
+    const msg =
+      getBrowserClientConfigError() ??
+      "Client Supabase navigateur indisponible (clé ANON / URL).";
+    const details = extractAuthErrorDetails(
+      { message: msg, name: "ClientUnavailable", status: 503 },
+      { isConfig: true }
+    );
     return {
       data: { user: null, session: null },
-      error: {
-        message:
-          getBrowserClientConfigError() ??
-          "Client Supabase indisponible. Vérifie la clé ANON sur Vercel.",
-      },
-    } as const;
+      error: { message: msg, name: "ClientUnavailable", status: 503 } as AuthError,
+      details,
+    };
   }
 
   try {
-    return await withTimeout(
-      supabase.auth.signInWithPassword({ email, password }),
-      AUTH_TIMEOUT_MS,
-      "auth.signIn"
-    );
-  } catch (err) {
-    if (err instanceof RequestTimeoutError) {
+    const result = await withTimeout(operation(supabase), AUTH_TIMEOUT_MS, label);
+
+    if (result.error) {
       return {
-        data: { user: null, session: null },
-        error: {
-          message:
-            "Connexion trop lente — réessaie dans quelques secondes. Si le problème persiste, vérifie que NEXT_PUBLIC_SUPABASE_ANON_KEY est bien la clé publique (anon), pas la service_role.",
-        },
-      } as const;
+        data: result.data,
+        error: result.error,
+        details: extractAuthErrorDetails(result.error),
+      };
     }
+
+    return { data: result.data, error: null, details: null };
+  } catch (err) {
+    const details = extractAuthErrorDetails(err, {
+      isTimeout: err instanceof RequestTimeoutError,
+    });
     return {
       data: { user: null, session: null },
       error: {
-        message: translateAuthError(
-          err instanceof Error ? err.message : "Erreur de connexion"
-        ),
-      },
-    } as const;
+        message: details.message,
+        name: details.name ?? "AuthError",
+        status: details.status ?? (details.isTimeout ? 408 : 500),
+        code: details.code,
+      } as AuthError,
+      details,
+    };
   }
+}
+
+export async function signInWithEmail(
+  email: string,
+  password: string
+): Promise<AuthOperationResult> {
+  return runAuthOperation("auth.signIn", (supabase) =>
+    supabase.auth.signInWithPassword({ email, password })
+  );
 }
 
 export async function signUpWithEmail(
   email: string,
   password: string,
   username: string
-) {
-  const configErr = authConfigError();
-  if (configErr) {
-    return {
-      data: { user: null, session: null },
-      error: configErr,
-    } as const;
-  }
-
-  const supabase = createClient();
-  if (!supabase) {
-    return {
-      data: { user: null, session: null },
-      error: {
-        message:
-          getBrowserClientConfigError() ??
-          "Client Supabase indisponible. Vérifie la clé ANON sur Vercel.",
-      },
-    } as const;
-  }
-
-  try {
-    return await withTimeout(
-      supabase.auth.signUp({
-        email,
-        password,
-        options: { data: { username } },
-      }),
-      AUTH_TIMEOUT_MS,
-      "auth.signUp"
-    );
-  } catch (err) {
-    if (err instanceof RequestTimeoutError) {
-      return {
-        data: { user: null, session: null },
-        error: {
-          message:
-            "Inscription trop lente — réessaie. Vérifie la clé ANON (publique) sur Vercel.",
-        },
-      } as const;
-    }
-    return {
-      data: { user: null, session: null },
-      error: {
-        message: translateAuthError(
-          err instanceof Error ? err.message : "Erreur d'inscription"
-        ),
-      },
-    } as const;
-  }
+): Promise<AuthOperationResult> {
+  return runAuthOperation("auth.signUp", (supabase) =>
+    supabase.auth.signUp({
+      email,
+      password,
+      options: { data: { username } },
+    })
+  );
 }
 
 export async function signOut() {
@@ -163,4 +143,9 @@ export async function signOut() {
   } catch {
     return { error: null };
   }
+}
+
+/** @deprecated Utiliser details + formatAuthErrorForDisplay sur /auth */
+export function translateAuthError(message: string): string {
+  return message;
 }

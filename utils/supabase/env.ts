@@ -60,17 +60,25 @@ export function getServiceSupabaseEnv(): ServiceSupabaseEnv | null {
 }
 
 export function getBrowserClientConfigError(): string | null {
-  if (!isSupabaseConfigured()) {
-    return "Supabase non configuré : ajoute NEXT_PUBLIC_SUPABASE_URL et NEXT_PUBLIC_SUPABASE_ANON_KEY sur Vercel.";
+  const url = process.env.NEXT_PUBLIC_SUPABASE_URL?.trim() ?? "";
+  const rawKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY?.trim() ?? "";
+
+  if (!url || !rawKey) {
+    return "Variables manquantes : NEXT_PUBLIC_SUPABASE_URL et/ou NEXT_PUBLIC_SUPABASE_ANON_KEY.";
   }
 
-  const rawKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY?.trim() ?? "";
-  if (isServiceRoleKey(normalizeAnonKey(rawKey))) {
-    return "Erreur de configuration : NEXT_PUBLIC_SUPABASE_ANON_KEY contient la clé service_role. Sur Vercel, mets la clé « anon » ou « publishable » (publique) dans ANON_KEY, et la clé « service_role » uniquement dans SUPABASE_SERVICE_ROLE_KEY.";
+  const anonNorm = normalizeAnonKey(rawKey);
+
+  if (isServiceRoleKey(anonNorm)) {
+    return "NEXT_PUBLIC_SUPABASE_ANON_KEY contient la clé service_role. Utilise la clé « anon » / « publishable » (publique) ici ; reserve service_role pour SUPABASE_SERVICE_ROLE_KEY uniquement.";
+  }
+
+  if (!isSupabaseConfigured()) {
+    return "Format invalide : URL doit être *.supabase.co et la clé ANON doit commencer par eyJ… (JWT) ou sb_publishable_…";
   }
 
   if (!getPublicSupabaseEnv()) {
-    return "Configuration Supabase invalide pour le navigateur.";
+    return "Impossible de construire le client navigateur avec les variables actuelles.";
   }
 
   return null;

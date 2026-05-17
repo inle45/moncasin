@@ -6,15 +6,15 @@ import { useRouter } from "next/navigation";
 import { AuthTabs, type AuthTab } from "@/components/auth/AuthTabs";
 import { LoginForm } from "@/components/auth/LoginForm";
 import { SignupForm } from "@/components/auth/SignupForm";
-import {
-  AuthMessage,
-  type AuthMessageType,
-} from "@/components/auth/AuthMessage";
+import { AuthMessage, type AuthMessageType } from "@/components/auth/AuthMessage";
+import { AuthErrorPanel } from "@/components/auth/AuthErrorPanel";
+import { AuthDiagnostics } from "@/components/auth/AuthDiagnostics";
 import { useAuth } from "@/hooks/useAuth";
 import {
   DEMO_MODE,
   getBrowserClientConfigError,
 } from "@/utils/supabase/client";
+import type { AuthErrorDetails } from "@/utils/supabase/auth-errors";
 import { cn } from "@/utils/cn";
 
 export default function AuthPage() {
@@ -26,6 +26,7 @@ export default function AuthPage() {
     type: AuthMessageType;
     text: string;
   } | null>(null);
+  const [authError, setAuthError] = useState<AuthErrorDetails | null>(null);
 
   const configError = getBrowserClientConfigError();
   const supabaseReady = !DEMO_MODE && !configError;
@@ -37,6 +38,7 @@ export default function AuthPage() {
   }, [authLoading, isAuthenticated, router]);
 
   const handleSuccess = (successMessage?: string) => {
+    setAuthError(null);
     setMessage({
       type: "success",
       text: successMessage ?? "Connexion réussie ! Redirection…",
@@ -44,13 +46,15 @@ export default function AuthPage() {
     setTimeout(() => router.replace("/"), 800);
   };
 
-  const handleError = (text: string) => {
-    setMessage({ type: "error", text });
+  const handleError = (details: AuthErrorDetails) => {
+    setMessage(null);
+    setAuthError(details);
   };
 
   const handleTabChange = (next: AuthTab) => {
     setTab(next);
     setMessage(null);
+    setAuthError(null);
   };
 
   return (
@@ -92,6 +96,8 @@ export default function AuthPage() {
         />
       )}
 
+      <AuthDiagnostics className="relative z-10 mb-4" />
+
       <div
         className={cn(
           "relative z-10 rounded-2xl border border-white/[0.08] p-5 shadow-glass backdrop-blur-2xl",
@@ -100,11 +106,12 @@ export default function AuthPage() {
       >
         <AuthTabs active={tab} onChange={handleTabChange} />
 
-        <div className="mt-6 min-h-[3rem]">
+        <div className="mt-6 min-h-[3rem] space-y-3">
           {message && (
             <AuthMessage type={message.type} message={message.text} />
           )}
-          {authLoading && supabaseReady && !message && (
+          {authError && <AuthErrorPanel details={authError} />}
+          {authLoading && supabaseReady && !message && !authError && (
             <p className="animate-pulse text-center text-xs text-white/40">
               Vérification de la session…
             </p>

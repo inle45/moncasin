@@ -2,12 +2,13 @@
 
 import { FormEvent, useState } from "react";
 import { AuthInput } from "./AuthInput";
-import { signUpWithEmail, translateAuthError } from "@/utils/supabase/auth";
+import { signUpWithEmail } from "@/utils/supabase/auth";
+import type { AuthErrorDetails } from "@/utils/supabase/auth-errors";
 import { cn } from "@/utils/cn";
 
 interface SignupFormProps {
   onSuccess: (message: string) => void;
-  onError: (message: string) => void;
+  onError: (details: AuthErrorDetails) => void;
   onLoadingChange: (loading: boolean) => void;
 }
 
@@ -45,15 +46,28 @@ export function SignupForm({
     }
 
     onLoadingChange(true);
-    const { data, error } = await signUpWithEmail(
+    const { data, error, details } = await signUpWithEmail(
       email.trim(),
       password,
       username.trim()
     );
     onLoadingChange(false);
 
+    if (error && details) {
+      onError(details);
+      return;
+    }
+
     if (error) {
-      onError(translateAuthError(error.message));
+      onError({
+        message: error.message,
+        status: error.status,
+        code: error.code,
+        name: error.name,
+        isTimeout: false,
+        isConfig: false,
+        raw: JSON.stringify(error, null, 2),
+      });
       return;
     }
 
