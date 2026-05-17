@@ -1,0 +1,35 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --casino-bg: #0b0813;
+    --casino-gold: #f5c542;
+    --casino-purple-neon: #a855f7;
+  }
+
+  html {
+    -webkit-tap-highlight-color: transparent;
+    scroll-behavior: smooth;
+  }
+
+  body {
+    @apply min-h-screen bg-casino-bg font-body text-white antialiased;
+    background-color: var(--casino-bg);
+  }
+
+  ::selection {
+    @apply bg-casino-purple-neon/40 text-white;
+  }
+}
+
+@layer utilities {
+  .glass-panel {
+    @apply border border-white/[0.08] bg-white/[0.04] shadow-glass backdrop-blur-xl;
+  }
+
+  .text-gradient-gold {
+    @apply bg-gradient-to-r from-casino-gold-neon via-casino-gold to-casino-gold-dim bg-clip-text text-transparent;
+  }
+}
