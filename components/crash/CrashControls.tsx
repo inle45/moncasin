@@ -88,7 +88,7 @@ export function CrashControls({
 
         {isDemoMode && isBetting && (
           <p className="text-center text-[10px] text-amber-200/80">
-            Connecte-toi pour miser avec tes potes
+            Mode local · mises sur ton appareil
           </p>
         )}
 

@@ -7,16 +7,9 @@ import {
   CrashPlayersList,
 } from "@/components/crash";
 import { useCrashGame } from "@/hooks/useCrashGame";
-import type { CrashSnapshot } from "@/utils/crash/server-loop";
 import { cn } from "@/utils/cn";
 
-interface CrashPageClientProps {
-  initialSnapshot: CrashSnapshot;
-}
-
-export default function CrashPageClient({
-  initialSnapshot,
-}: CrashPageClientProps) {
+export default function CrashPageClient() {
   const {
     balance,
     bet,
@@ -38,12 +31,11 @@ export default function CrashPageClient({
     roundNumber,
     profileLoading,
     isSyncing,
-    profileError,
     isDemoMode,
     placeBet,
     cashout,
     changeBet,
-  } = useCrashGame({ initialSnapshot });
+  } = useCrashGame();
 
   return (
     <div
@@ -52,22 +44,7 @@ export default function CrashPageClient({
         "bg-[radial-gradient(ellipse_at_top,rgba(124,58,237,0.22),transparent_55%),#0B0813]"
       )}
     >
-      <CrashHeader
-        balance={balance}
-        isLoading={profileLoading || isSyncing}
-      />
-
-      {profileError && (
-        <p className="mx-4 mt-2 rounded-lg border border-red-400/40 bg-red-500/10 px-3 py-2 text-center text-xs text-red-200">
-          {profileError}
-        </p>
-      )}
-
-      {isDemoMode && !profileLoading && (
-        <p className="mx-4 mt-2 rounded-lg border border-casino-gold/30 bg-casino-gold/10 px-3 py-2 text-center text-[11px] text-casino-gold-neon">
-          Mode spectateur · connecte-toi pour miser avec tes potes
-        </p>
-      )}
+      <CrashHeader balance={balance} isLoading={profileLoading} />
 
       {message && (
         <p
