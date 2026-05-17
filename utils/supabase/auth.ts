@@ -1,8 +1,9 @@
 import { createClient } from "./client";
 import { isDemoMode } from "./config";
-import { withTimeout } from "./timeout";
+import { getBrowserClientConfigError } from "./env";
+import { RequestTimeoutError, withTimeout } from "./timeout";
 
-const AUTH_TIMEOUT_MS = 5000;
+const AUTH_TIMEOUT_MS = 15000;
 
 export function translateAuthError(message: string): string {
   const lower = message.toLowerCase();
@@ -26,10 +27,10 @@ export function translateAuthError(message: string): string {
     return "Confirme ton email avant de te connecter.";
   }
   if (lower.includes("failed to fetch") || lower.includes("network")) {
-    return "Impossible de joindre Supabase. Vérifie ta connexion et le fichier .env.local.";
+    return "Impossible de joindre Supabase. Vérifie ta connexion et les variables NEXT_PUBLIC_* sur Vercel.";
   }
   if (lower.includes("invalid") && lower.includes("api key")) {
-    return "Clé API Supabase invalide. Ouvre Supabase → Settings → API Keys, copie la clé « anon public » (onglet Legacy, commence par eyJ…) ou la clé « publishable » complète (sb_publishable_…), mets-la dans .env.local puis redémarre npm run dev.";
+    return "Clé API Supabase invalide. Utilise la clé « anon » ou « publishable » (sb_publishable_… ou eyJ…) dans NEXT_PUBLIC_SUPABASE_ANON_KEY — pas la service_role.";
   }
 
   return message;
@@ -40,11 +41,19 @@ const DEMO_AUTH_ERROR = {
     "Mode démo actif : configure NEXT_PUBLIC_SUPABASE_URL et NEXT_PUBLIC_SUPABASE_ANON_KEY dans .env.local pour activer l'authentification.",
 };
 
+function authConfigError() {
+  if (isDemoMode()) return DEMO_AUTH_ERROR;
+  return getBrowserClientConfigError()
+    ? { message: getBrowserClientConfigError()! }
+    : null;
+}
+
 export async function signInWithEmail(email: string, password: string) {
-  if (isDemoMode()) {
+  const configErr = authConfigError();
+  if (configErr) {
     return {
       data: { user: null, session: null },
-      error: DEMO_AUTH_ERROR,
+      error: configErr,
     } as const;
   }
 
@@ -52,7 +61,11 @@ export async function signInWithEmail(email: string, password: string) {
   if (!supabase) {
     return {
       data: { user: null, session: null },
-      error: DEMO_AUTH_ERROR,
+      error: {
+        message:
+          getBrowserClientConfigError() ??
+          "Client Supabase indisponible. Vérifie la clé ANON sur Vercel.",
+      },
     } as const;
   }
 
@@ -62,10 +75,23 @@ export async function signInWithEmail(email: string, password: string) {
       AUTH_TIMEOUT_MS,
       "auth.signIn"
     );
-  } catch {
+  } catch (err) {
+    if (err instanceof RequestTimeoutError) {
+      return {
+        data: { user: null, session: null },
+        error: {
+          message:
+            "Connexion trop lente — réessaie dans quelques secondes. Si le problème persiste, vérifie que NEXT_PUBLIC_SUPABASE_ANON_KEY est bien la clé publique (anon), pas la service_role.",
+        },
+      } as const;
+    }
     return {
       data: { user: null, session: null },
-      error: { message: "Connexion expirée — vérifie Supabase ou joue en mode démo." },
+      error: {
+        message: translateAuthError(
+          err instanceof Error ? err.message : "Erreur de connexion"
+        ),
+      },
     } as const;
   }
 }
@@ -75,10 +101,11 @@ export async function signUpWithEmail(
   password: string,
   username: string
 ) {
-  if (isDemoMode()) {
+  const configErr = authConfigError();
+  if (configErr) {
     return {
       data: { user: null, session: null },
-      error: DEMO_AUTH_ERROR,
+      error: configErr,
     } as const;
   }
 
@@ -86,7 +113,11 @@ export async function signUpWithEmail(
   if (!supabase) {
     return {
       data: { user: null, session: null },
-      error: DEMO_AUTH_ERROR,
+      error: {
+        message:
+          getBrowserClientConfigError() ??
+          "Client Supabase indisponible. Vérifie la clé ANON sur Vercel.",
+      },
     } as const;
   }
 
@@ -100,10 +131,23 @@ export async function signUpWithEmail(
       AUTH_TIMEOUT_MS,
       "auth.signUp"
     );
-  } catch {
+  } catch (err) {
+    if (err instanceof RequestTimeoutError) {
+      return {
+        data: { user: null, session: null },
+        error: {
+          message:
+            "Inscription trop lente — réessaie. Vérifie la clé ANON (publique) sur Vercel.",
+        },
+      } as const;
+    }
     return {
       data: { user: null, session: null },
-      error: { message: "Inscription expirée — vérifie Supabase ou joue en mode démo." },
+      error: {
+        message: translateAuthError(
+          err instanceof Error ? err.message : "Erreur d'inscription"
+        ),
+      },
     } as const;
   }
 }

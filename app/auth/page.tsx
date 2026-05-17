@@ -11,7 +11,10 @@ import {
   type AuthMessageType,
 } from "@/components/auth/AuthMessage";
 import { useAuth } from "@/hooks/useAuth";
-import { DEMO_MODE } from "@/utils/supabase/client";
+import {
+  DEMO_MODE,
+  getBrowserClientConfigError,
+} from "@/utils/supabase/client";
 import { cn } from "@/utils/cn";
 
 export default function AuthPage() {
@@ -24,7 +27,8 @@ export default function AuthPage() {
     text: string;
   } | null>(null);
 
-  const supabaseReady = !DEMO_MODE;
+  const configError = getBrowserClientConfigError();
+  const supabaseReady = !DEMO_MODE && !configError;
 
   useEffect(() => {
     if (!authLoading && isAuthenticated) {
@@ -80,7 +84,10 @@ export default function AuthPage() {
       {!supabaseReady && (
         <AuthMessage
           type="info"
-          message="Supabase non configuré : ajoute tes clés dans .env.local puis redémarre npm run dev."
+          message={
+            configError ??
+            "Supabase non configuré : ajoute tes clés dans .env.local puis redémarre npm run dev."
+          }
           className="relative z-10 mb-4"
         />
       )}

@@ -1,20 +1,16 @@
 import { createClient } from "@supabase/supabase-js";
 import type { Database } from "./database.types";
-import { normalizeAnonKey } from "./config";
+import { getServiceSupabaseEnv } from "./env";
 
 /**
- * Client serveur (service role) — uniquement dans les Route Handlers / cron.
- * Nécessite SUPABASE_SERVICE_ROLE_KEY dans Vercel.
+ * Client serveur (service_role) — Route Handlers / cron uniquement.
+ * N'utilise jamais NEXT_PUBLIC_SUPABASE_ANON_KEY.
  */
 export function createServiceClient() {
-  const url = process.env.NEXT_PUBLIC_SUPABASE_URL?.trim();
-  const serviceKey =
-    process.env.SUPABASE_SERVICE_ROLE_KEY?.trim() ??
-    process.env.SUPABASE_SERVICE_KEY?.trim();
+  const env = getServiceSupabaseEnv();
+  if (!env) return null;
 
-  if (!url || !serviceKey) return null;
-
-  return createClient<Database>(url, normalizeAnonKey(serviceKey), {
+  return createClient<Database>(env.url, env.serviceRoleKey, {
     auth: { persistSession: false, autoRefreshToken: false },
   });
 }
