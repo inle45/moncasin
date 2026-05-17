@@ -7,6 +7,7 @@ import {
   DEFAULT_CRASH_BET,
 } from "@/utils/crash/constants";
 import { deriveVisualState } from "@/utils/crash/visual-state";
+import { normalizeRoundId } from "@/utils/crash/uuid";
 import { liveStateRowToPublic } from "@/utils/crash/live-state";
 import {
   LocalCrashSimulator,
@@ -43,6 +44,7 @@ export function useCrashGame() {
   const userIdRef = useRef<string | null>(null);
   const fallbackSimRef = useRef<LocalCrashSimulator | null>(null);
   const advancingRef = useRef(false);
+  const placingBetRef = useRef(false);
   const lastRealtimeAtRef = useRef(0);
   const lastCurveMRef = useRef(1);
 
@@ -323,7 +325,7 @@ export function useCrashGame() {
     if (!isSupabaseConfigured() || isDemoMode()) return;
 
     const runTick = async () => {
-      if (advancingRef.current) return;
+      if (advancingRef.current || placingBetRef.current) return;
       advancingRef.current = true;
       try {
         if (!serverStateRef.current?.round_id) {
@@ -428,27 +430,33 @@ export function useCrashGame() {
       return;
     }
 
-    const roundId =
+    const roundId = normalizeRoundId(
       roundIdRef.current ||
-      serverStateRef.current?.round_id ||
-      serverState?.round_id ||
-      "";
+        serverStateRef.current?.round_id ||
+        serverState?.round_id
+    );
     if (!roundId) {
       setMessage("Manche non synchronisée — attente du round_id…");
       void refreshServerState();
       window.setTimeout(() => setMessage(null), 2500);
       return;
     }
-    const { ok, balance: newBal, error } = await placeCrashBet(bet, roundId);
-    if (ok) {
-      if (newBal != null) setBalanceTracked(newBal);
-      setHasPlacedBet(true);
-      setMessage(`Mise ${bet} jetons enregistrée`);
-      void reloadBets();
-    } else {
-      setMessage(error ?? "Mise refusée");
+
+    placingBetRef.current = true;
+    try {
+      const { ok, balance: newBal, error } = await placeCrashBet(bet, roundId);
+      if (ok) {
+        if (newBal != null) setBalanceTracked(newBal);
+        setHasPlacedBet(true);
+        setMessage(`Mise ${bet} jetons enregistrée`);
+        void reloadBets();
+      } else {
+        setMessage(error ?? "Mise refusée");
+      }
+      window.setTimeout(() => setMessage(null), 2000);
+    } finally {
+      placingBetRef.current = false;
     }
-    window.setTimeout(() => setMessage(null), 2000);
   }, [
     phase,
     bettingSecondsLeft,

@@ -1,4 +1,5 @@
 import type { CrashPublicState } from "@/utils/crash/types";
+import { normalizeRoundId } from "@/utils/crash/uuid";
 
 export function parseIsoField(value: unknown): string | null {
   if (value == null || value === "null" || value === "undefined") return null;
@@ -14,7 +15,7 @@ export function parseCrashState(raw: unknown): CrashPublicState | null {
   const phase = o.phase as CrashPublicState["phase"];
   if (!["betting", "flying", "crashed"].includes(phase)) return null;
 
-  const roundId = String(o.round_id ?? "").trim();
+  const roundId = normalizeRoundId(o.round_id);
   if (!roundId) return null;
 
   return {

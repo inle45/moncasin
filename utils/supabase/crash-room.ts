@@ -1,7 +1,11 @@
 import { liveStateRowToPublic } from "@/utils/crash/live-state";
+import { normalizeRoundId } from "@/utils/crash/uuid";
 import { parseCrashState } from "@/utils/crash/parse-state";
 import { createClient, safeQuery } from "./client";
+import type { Database } from "./database.types";
 import type { CrashBetRow, CrashPublicState } from "@/utils/crash/types";
+
+type CrashBetInsert = Database["public"]["Tables"]["crash_bets"]["Insert"];
 
 import { CRASH_BETTING_SECONDS } from "@/utils/crash/constants";
 
@@ -122,7 +126,10 @@ export async function placeCrashBet(
   const supabase = createClient();
   if (!supabase) return { ok: false, error: "Supabase non configuré" };
 
-  if (!roundId) return { ok: false, error: "Manche non synchronisée" };
+  const normalizedRoundId = normalizeRoundId(roundId);
+  if (!normalizedRoundId) {
+    return { ok: false, error: "Manche non synchronisée (round_id invalide)" };
+  }
 
   const safeAmount = Math.floor(amount);
   if (safeAmount <= 0) return { ok: false, error: "Mise invalide" };
@@ -162,13 +169,15 @@ export async function placeCrashBet(
     return { ok: false, error: balanceError.message };
   }
 
-  const { error: betError } = await supabase.from("crash_bets").insert({
-    round_id: roundId,
+  const betRow: CrashBetInsert = {
+    round_id: normalizedRoundId,
     user_id: user.id,
     username: profile.username?.trim() || "Joueur",
     bet_amount: safeAmount,
     status: "active",
-  });
+  };
+
+  const { error: betError } = await supabase.from("crash_bets").insert(betRow);
 
   if (betError) {
     await supabase
@@ -195,7 +204,10 @@ export async function cashoutCrash(
   const supabase = createClient();
   if (!supabase) return { ok: false, error: "Supabase non configuré" };
 
-  if (!roundId) return { ok: false, error: "Manche non synchronisée" };
+  const normalizedRoundId = normalizeRoundId(roundId);
+  if (!normalizedRoundId) {
+    return { ok: false, error: "Manche non synchronisée (round_id invalide)" };
+  }
 
   const {
     data: { user },
@@ -209,7 +221,7 @@ export async function cashoutCrash(
   const { data: activeBet, error: betError } = await supabase
     .from("crash_bets")
     .select("id, bet_amount")
-    .eq("round_id", roundId)
+    .eq("round_id", normalizedRoundId)
     .eq("user_id", user.id)
     .eq("status", "active")
     .maybeSingle();
