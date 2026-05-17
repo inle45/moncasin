@@ -11,19 +11,17 @@ export async function GET() {
   if (snapshot.error) {
     console.error("[MonCasin /api/crash/loop]", snapshot.error, {
       source: snapshot.source,
+      needsAdvance: snapshot.needsAdvance,
+      tickLog: snapshot.tickLog,
     });
   }
 
-  return NextResponse.json(
-    {
-      ...snapshot,
-      serviceRoleConfigured: Boolean(process.env.SUPABASE_SERVICE_ROLE_KEY?.trim()),
+  const ok = Boolean(snapshot.state?.round_id) && !snapshot.needsAdvance;
+
+  return NextResponse.json(snapshot, {
+    status: ok ? 200 : 503,
+    headers: {
+      "Cache-Control": "no-store, max-age=0",
     },
-    {
-      status: snapshot.state?.round_id ? 200 : 503,
-      headers: {
-        "Cache-Control": "no-store, max-age=0",
-      },
-    }
-  );
+  });
 }

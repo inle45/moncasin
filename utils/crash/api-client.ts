@@ -29,6 +29,9 @@ export async function fetchCrashLoop(
         serverTime: json.serverTime ?? Date.now(),
         error: json.error ?? null,
         source: json.source ?? "supabase",
+        tickLog: json.tickLog ?? [],
+        needsAdvance: json.needsAdvance ?? false,
+        serviceRoleConfigured: json.serviceRoleConfigured ?? false,
       };
     }
 
@@ -39,6 +42,9 @@ export async function fetchCrashLoop(
       serverTime: Date.now(),
       error: json.error ?? `HTTP ${res.status}`,
       source: "fallback",
+      tickLog: json.tickLog ?? [],
+      needsAdvance: json.needsAdvance ?? true,
+      serviceRoleConfigured: json.serviceRoleConfigured ?? false,
     };
   } catch (err) {
     return {
@@ -48,6 +54,9 @@ export async function fetchCrashLoop(
       serverTime: Date.now(),
       error: err instanceof Error ? err.message : "Réseau",
       source: "fallback",
+      tickLog: [],
+      needsAdvance: true,
+      serviceRoleConfigured: false,
     };
   }
 }
