@@ -2,7 +2,7 @@
 
 import { CRASH_BET_OPTIONS } from "@/utils/crash/constants";
 import { formatMultiplier } from "@/utils/crash/engine";
-import type { CrashPhase } from "@/hooks/useCrashGame";
+import type { CrashPhase } from "@/utils/crash/types";
 import { cn } from "@/utils/cn";
 
 interface CrashControlsProps {
@@ -12,6 +12,9 @@ interface CrashControlsProps {
   potentialWin: number;
   canPlaceBet: boolean;
   canCashout: boolean;
+  hasPlacedBet: boolean;
+  bettingSecondsLeft: number;
+  isDemoMode: boolean;
   onBetChange: (delta: number) => void;
   onPlaceBet: () => void;
   onCashout: () => void;
@@ -24,6 +27,9 @@ export function CrashControls({
   potentialWin,
   canPlaceBet,
   canCashout,
+  hasPlacedBet,
+  bettingSecondsLeft,
+  isDemoMode,
   onBetChange,
   onPlaceBet,
   onCashout,
@@ -31,7 +37,7 @@ export function CrashControls({
   const betIndex = CRASH_BET_OPTIONS.indexOf(
     bet as (typeof CRASH_BET_OPTIONS)[number]
   );
-  const isIdle = phase === "idle";
+  const isBetting = phase === "betting";
 
   return (
     <div
@@ -42,7 +48,7 @@ export function CrashControls({
       )}
     >
       <div className="mx-auto max-w-lg space-y-3 sm:max-w-2xl">
-        {isIdle && (
+        {isBetting && !hasPlacedBet && (
           <div className="flex items-center justify-between rounded-xl border border-white/10 bg-zinc-900/70 p-3">
             <span className="text-xs font-semibold uppercase tracking-wider text-white/50">
               Mise
@@ -71,6 +77,18 @@ export function CrashControls({
               </button>
             </div>
           </div>
+        )}
+
+        {hasPlacedBet && isBetting && (
+          <p className="text-center text-xs text-casino-gold-neon">
+            Mise enregistrée · décollage dans {bettingSecondsLeft}s
+          </p>
+        )}
+
+        {isDemoMode && isBetting && (
+          <p className="text-center text-[10px] text-amber-200/80">
+            Connecte-toi pour miser avec tes potes
+          </p>
         )}
 
         {canCashout ? (
@@ -102,11 +120,18 @@ export function CrashControls({
               "border-2 border-casino-gold-neon/60",
               "bg-gradient-to-r from-casino-purple via-casino-purple-neon to-casino-gold/90 text-white",
               "shadow-neon-purple transition-all",
-              canPlaceBet && "animate-spin-pulse hover:brightness-110 active:scale-[0.98]",
+              canPlaceBet &&
+                "animate-spin-pulse hover:brightness-110 active:scale-[0.98]",
               !canPlaceBet && "cursor-not-allowed opacity-45"
             )}
           >
-            {phase === "flying" ? "En vol…" : "Placer la mise"}
+            {phase === "flying"
+              ? "En vol…"
+              : phase === "crashed"
+                ? "Prochaine manche…"
+                : hasPlacedBet
+                  ? "Mise placée"
+                  : "Placer la mise"}
           </button>
         )}
       </div>

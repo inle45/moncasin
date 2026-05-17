@@ -1,6 +1,11 @@
 "use client";
 
-import { CrashCanvas, CrashControls, CrashHeader } from "@/components/crash";
+import {
+  CrashCanvas,
+  CrashControls,
+  CrashHeader,
+  CrashPlayersList,
+} from "@/components/crash";
 import { useCrashGame } from "@/hooks/useCrashGame";
 import { cn } from "@/utils/cn";
 
@@ -17,6 +22,13 @@ export default function CrashPage() {
     canPlaceBet,
     canCashout,
     potentialWin,
+    bettingSecondsLeft,
+    roundBets,
+    activePlayersCount,
+    hasPlacedBet,
+    hasCashedOut,
+    connected,
+    roundNumber,
     profileLoading,
     isSyncing,
     profileError,
@@ -46,7 +58,7 @@ export default function CrashPage() {
 
       {isDemoMode && !profileLoading && (
         <p className="mx-4 mt-2 rounded-lg border border-casino-gold/30 bg-casino-gold/10 px-3 py-2 text-center text-[11px] text-casino-gold-neon">
-          Mode démo · solde synchronisé localement
+          Mode spectateur · connecte-toi pour miser avec tes potes
         </p>
       )}
 
@@ -54,7 +66,7 @@ export default function CrashPage() {
         <p
           className={cn(
             "mx-4 mt-3 animate-auth-message rounded-xl border px-4 py-2.5 text-center text-sm font-semibold backdrop-blur-xl",
-            phase === "cashed_out"
+            hasCashedOut
               ? "border-emerald-400/40 bg-emerald-500/15 text-emerald-100"
               : phase === "crashed"
                 ? "border-red-400/40 bg-red-500/15 text-red-100"
@@ -73,6 +85,15 @@ export default function CrashPage() {
           crashPoint={crashPoint}
           curvePoints={curvePoints}
           history={crashHistory}
+          bettingSecondsLeft={bettingSecondsLeft}
+          roundNumber={roundNumber}
+        />
+
+        <CrashPlayersList
+          bets={roundBets}
+          phase={phase}
+          activeCount={activePlayersCount}
+          connected={connected}
         />
       </div>
 
@@ -83,6 +104,9 @@ export default function CrashPage() {
         potentialWin={potentialWin}
         canPlaceBet={canPlaceBet}
         canCashout={canCashout}
+        hasPlacedBet={hasPlacedBet}
+        bettingSecondsLeft={bettingSecondsLeft}
+        isDemoMode={isDemoMode}
         onBetChange={changeBet}
         onPlaceBet={placeBet}
         onCashout={cashout}
