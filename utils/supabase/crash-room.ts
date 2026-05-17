@@ -76,35 +76,77 @@ export async function syncCrashFromClient(
   return { data: null, error: lastError ?? error ?? "Sync impossible" };
 }
 
+/** Mise via INSERT crash_bets + UPDATE profiles (sans RPC). */
 export async function placeCrashBet(
-  amount: number
+  amount: number,
+  roundId: string
 ): Promise<{ ok: boolean; balance?: number; error: string | null }> {
   const supabase = createClient();
   if (!supabase) return { ok: false, error: "Supabase non configuré" };
 
-  const { data: response, timedOut } = await safeQuery(
-    supabase.rpc("crash_place_bet", { p_amount: amount })
-  );
+  if (!roundId) return { ok: false, error: "Manche non synchronisée" };
 
-  if (timedOut || !response) {
-    return { ok: false, error: "Connexion expirée" };
+  const safeAmount = Math.floor(amount);
+  if (safeAmount <= 0) return { ok: false, error: "Mise invalide" };
+
+  const {
+    data: { user },
+    error: authError,
+  } = await supabase.auth.getUser();
+
+  if (authError || !user) {
+    return { ok: false, error: "Non authentifié" };
   }
 
-  const { data, error } = response as {
-    data: { ok?: boolean; balance?: number } | null;
-    error: { message: string } | null;
-  };
+  const { data: profile, error: profileError } = await supabase
+    .from("profiles")
+    .select("balance, username")
+    .eq("id", user.id)
+    .single();
 
-  if (error) return { ok: false, error: error.message };
-  return {
-    ok: !!data?.ok,
-    balance: data?.balance != null ? Number(data.balance) : undefined,
-    error: null,
-  };
+  if (profileError || !profile) {
+    return { ok: false, error: profileError?.message ?? "Profil introuvable" };
+  }
+
+  const currentBalance = Math.floor(Number(profile.balance));
+  if (currentBalance < safeAmount) {
+    return { ok: false, error: "Solde insuffisant" };
+  }
+
+  const newBalance = currentBalance - safeAmount;
+
+  const { error: balanceError } = await supabase
+    .from("profiles")
+    .update({ balance: newBalance })
+    .eq("id", user.id);
+
+  if (balanceError) {
+    return { ok: false, error: balanceError.message };
+  }
+
+  const { error: betError } = await supabase.from("crash_bets").insert({
+    round_id: roundId,
+    user_id: user.id,
+    username: profile.username?.trim() || "Joueur",
+    bet_amount: safeAmount,
+    status: "active",
+  });
+
+  if (betError) {
+    await supabase
+      .from("profiles")
+      .update({ balance: currentBalance })
+      .eq("id", user.id);
+    return { ok: false, error: betError.message };
+  }
+
+  return { ok: true, balance: newBalance, error: null };
 }
 
+/** Cashout via UPDATE crash_bets + profiles (sans RPC). */
 export async function cashoutCrash(
-  multiplier: number
+  multiplier: number,
+  roundId: string
 ): Promise<{
   ok: boolean;
   multiplier?: number;
@@ -115,31 +157,68 @@ export async function cashoutCrash(
   const supabase = createClient();
   if (!supabase) return { ok: false, error: "Supabase non configuré" };
 
-  const { data: response, timedOut } = await safeQuery(
-    supabase.rpc("crash_cashout", { p_multiplier: multiplier })
-  );
+  if (!roundId) return { ok: false, error: "Manche non synchronisée" };
 
-  if (timedOut || !response) {
-    return { ok: false, error: "Connexion expirée" };
+  const {
+    data: { user },
+    error: authError,
+  } = await supabase.auth.getUser();
+
+  if (authError || !user) {
+    return { ok: false, error: "Non authentifié" };
   }
 
-  const { data, error } = response as {
-    data: {
-      ok?: boolean;
-      multiplier?: number;
-      payout?: number;
-      balance?: number;
-    } | null;
-    error: { message: string } | null;
-  };
+  const { data: activeBet, error: betError } = await supabase
+    .from("crash_bets")
+    .select("id, bet_amount")
+    .eq("round_id", roundId)
+    .eq("user_id", user.id)
+    .eq("status", "active")
+    .maybeSingle();
 
-  if (error) return { ok: false, error: error.message };
+  if (betError) return { ok: false, error: betError.message };
+  if (!activeBet) return { ok: false, error: "Aucune mise active" };
+
+  const finalMult = Math.max(1, Math.floor(multiplier * 100) / 100);
+  const payout = Math.floor(Number(activeBet.bet_amount) * finalMult);
+
+  const { error: cashoutError } = await supabase
+    .from("crash_bets")
+    .update({
+      status: "cashed_out",
+      cashout_multiplier: finalMult,
+      payout,
+    })
+    .eq("id", activeBet.id)
+    .eq("user_id", user.id)
+    .eq("status", "active");
+
+  if (cashoutError) return { ok: false, error: cashoutError.message };
+
+  const { data: profile, error: profileError } = await supabase
+    .from("profiles")
+    .select("balance")
+    .eq("id", user.id)
+    .single();
+
+  if (profileError || !profile) {
+    return { ok: false, error: profileError?.message ?? "Profil introuvable" };
+  }
+
+  const newBalance = Math.floor(Number(profile.balance)) + payout;
+
+  const { error: balanceError } = await supabase
+    .from("profiles")
+    .update({ balance: newBalance })
+    .eq("id", user.id);
+
+  if (balanceError) return { ok: false, error: balanceError.message };
 
   return {
-    ok: !!data?.ok,
-    multiplier: data?.multiplier != null ? Number(data.multiplier) : undefined,
-    payout: data?.payout != null ? Number(data.payout) : undefined,
-    balance: data?.balance != null ? Number(data.balance) : undefined,
+    ok: true,
+    multiplier: finalMult,
+    payout,
+    balance: newBalance,
     error: null,
   };
 }

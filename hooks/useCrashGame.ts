@@ -386,7 +386,9 @@ export function useCrashGame() {
       return;
     }
 
-    const { ok, balance: newBal, error } = await placeCrashBet(bet);
+    const roundId =
+      roundIdRef.current || serverStateRef.current?.round_id || "";
+    const { ok, balance: newBal, error } = await placeCrashBet(bet, roundId);
     if (ok) {
       if (newBal != null) setBalanceTracked(newBal);
       setHasPlacedBet(true);
@@ -401,7 +403,12 @@ export function useCrashGame() {
   const cashout = useCallback(async () => {
     if (phase !== "flying" || !hasPlacedBet || hasCashedOut) return;
 
-    const { ok, balance: newBal, payout, error } = await cashoutCrash(multiplier);
+    const roundId =
+      roundIdRef.current || serverStateRef.current?.round_id || "";
+    const { ok, balance: newBal, payout, error } = await cashoutCrash(
+      multiplier,
+      roundId
+    );
     if (ok) {
       if (newBal != null) setBalanceTracked(newBal);
       setHasCashedOut(true);
