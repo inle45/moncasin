@@ -3,42 +3,47 @@
 import { useEffect, useState } from "react";
 import { cn } from "@/utils/cn";
 
-interface DiagnosticsPayload {
-  configured: boolean;
-  browserConfigError: string | null;
-  url: string | null;
-  anonKeyPresent: boolean;
-  anonKeyMasked: string | null;
-  anonKeyFormat: string;
-  anonLooksLikeServiceRole: boolean;
-  publicEnvOk: boolean;
-  serviceKeyPresent: boolean;
-  serviceEnvOk: boolean;
-  authHealth: { ok: boolean; status: number; body?: string } | null;
-}
-
+/** Toujours visible — affiche la réponse brute de GET /api/auth/diagnostics */
 export function AuthDiagnostics({ className }: { className?: string }) {
-  const [data, setData] = useState<DiagnosticsPayload | null>(null);
-  const [loadError, setLoadError] = useState<string | null>(null);
+  const [jsonText, setJsonText] = useState<string>(
+    "Chargement de /api/auth/diagnostics…"
+  );
 
   useEffect(() => {
     let cancelled = false;
 
     (async () => {
       try {
-        const res = await fetch("/api/auth/diagnostics", { cache: "no-store" });
-        const json = (await res.json()) as DiagnosticsPayload & { error?: string };
-        if (!cancelled) {
-          if (!res.ok) {
-            setLoadError(json.error ?? `HTTP ${res.status}`);
-          } else {
-            setData(json);
-            setLoadError(null);
-          }
+        const res = await fetch("/api/auth/diagnostics", {
+          cache: "no-store",
+          headers: { Accept: "application/json" },
+        });
+        const text = await res.text();
+        let body: unknown = text;
+        try {
+          body = JSON.parse(text);
+        } catch {
+          /* texte brut */
         }
+
+        const output = JSON.stringify(
+          { httpStatus: res.status, ok: res.ok, body },
+          null,
+          2
+        );
+
+        if (!cancelled) setJsonText(output);
       } catch (err) {
         if (!cancelled) {
-          setLoadError(err instanceof Error ? err.message : String(err));
+          setJsonText(
+            JSON.stringify(
+              {
+                fetchError: err instanceof Error ? err.message : String(err),
+              },
+              null,
+              2
+            )
+          );
         }
       }
     })();
@@ -48,44 +53,23 @@ export function AuthDiagnostics({ className }: { className?: string }) {
     };
   }, []);
 
-  if (loadError) {
-    return (
-      <p className={cn("text-[10px] text-amber-200/80", className)}>
-        Diagnostic serveur : {loadError}
-      </p>
-    );
-  }
-
-  if (!data) return null;
-
   return (
-    <details
+    <section
       className={cn(
-        "rounded-lg border border-white/10 bg-black/30 p-3 text-[10px] text-white/50",
+        "relative z-50 mb-6 rounded-xl border-2 border-amber-400/70 bg-black/80 p-4 shadow-lg",
         className
       )}
+      aria-live="polite"
     >
-      <summary className="cursor-pointer font-medium uppercase tracking-wider text-white/40">
-        Diagnostic Supabase (serveur)
-      </summary>
-      <ul className="mt-2 space-y-1 font-mono">
-        <li>configured: {String(data.configured)}</li>
-        <li>publicEnvOk: {String(data.publicEnvOk)}</li>
-        <li>url: {data.url ?? "—"}</li>
-        <li>anon: {data.anonKeyMasked ?? "absent"} ({data.anonKeyFormat})</li>
-        <li>anon=service_role?: {String(data.anonLooksLikeServiceRole)}</li>
-        <li>serviceEnvOk: {String(data.serviceEnvOk)}</li>
-        {data.browserConfigError && (
-          <li className="text-red-300">config: {data.browserConfigError}</li>
-        )}
-        {data.authHealth && (
-          <li>
-            auth/health: {data.authHealth.status}{" "}
-            {data.authHealth.ok ? "OK" : "FAIL"}
-            {data.authHealth.body ? ` — ${data.authHealth.body}` : ""}
-          </li>
-        )}
-      </ul>
-    </details>
+      <h2 className="mb-2 text-xs font-bold uppercase tracking-wider text-amber-300">
+        Diagnostic Supabase (serveur) — /api/auth/diagnostics
+      </h2>
+      <p className="mb-2 text-[10px] text-white/50">
+        Réponse API affichée en direct (sans condition).
+      </p>
+      <pre className="max-h-64 overflow-auto whitespace-pre-wrap break-all rounded-lg bg-zinc-950 p-3 font-mono text-[11px] leading-relaxed text-emerald-200">
+        {jsonText}
+      </pre>
+    </section>
   );
 }

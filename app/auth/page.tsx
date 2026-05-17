@@ -58,7 +58,9 @@ export default function AuthPage() {
   };
 
   return (
-    <div className="relative mx-auto min-h-screen max-w-lg overflow-hidden bg-casino-bg px-4 py-8 sm:max-w-md">
+    <div className="relative mx-auto min-h-screen max-w-lg overflow-x-hidden bg-casino-bg px-4 py-8 sm:max-w-md">
+      <AuthDiagnostics className="relative z-50" />
+
       <div className="pointer-events-none absolute -left-20 top-0 h-56 w-56 rounded-full bg-casino-purple/25 blur-[100px]" />
       <div className="pointer-events-none absolute -right-16 bottom-32 h-48 w-48 rounded-full bg-casino-gold/15 blur-[80px]" />
 
@@ -95,8 +97,6 @@ export default function AuthPage() {
           className="relative z-10 mb-4"
         />
       )}
-
-      <AuthDiagnostics className="relative z-10 mb-4" />
 
       <div
         className={cn(

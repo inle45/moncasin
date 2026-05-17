@@ -113,9 +113,59 @@ export async function signInWithEmail(
   email: string,
   password: string
 ): Promise<AuthOperationResult> {
-  return runAuthOperation("auth.signIn", (supabase) =>
-    supabase.auth.signInWithPassword({ email, password })
-  );
+  const configResult = configFailure();
+  if (configResult) {
+    if (configResult.error) {
+      alert(JSON.stringify(configResult.error));
+    }
+    return configResult;
+  }
+
+  const supabase = createClient();
+  if (!supabase) {
+    const err = {
+      message:
+        getBrowserClientConfigError() ??
+        "Client Supabase navigateur indisponible.",
+      name: "ClientUnavailable",
+      status: 503,
+    };
+    alert(JSON.stringify(err));
+    const details = extractAuthErrorDetails(err, { isConfig: true });
+    return {
+      data: { user: null, session: null },
+      error: err as AuthError,
+      details,
+    };
+  }
+
+  try {
+    const result = await supabase.auth.signInWithPassword({ email, password });
+
+    if (result.error) {
+      alert(JSON.stringify(result.error));
+      return {
+        data: result.data,
+        error: result.error,
+        details: extractAuthErrorDetails(result.error),
+      };
+    }
+
+    return { data: result.data, error: null, details: null };
+  } catch (error) {
+    alert(JSON.stringify(error));
+    const details = extractAuthErrorDetails(error);
+    return {
+      data: { user: null, session: null },
+      error: {
+        message: details.message,
+        name: details.name ?? "AuthError",
+        status: details.status ?? 500,
+        code: details.code,
+      } as AuthError,
+      details,
+    };
+  }
 }
 
 export async function signUpWithEmail(
