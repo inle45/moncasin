@@ -39,6 +39,24 @@ export interface Database {
         };
         Relationships: [];
       };
+      progressive_jackpots: {
+        Row: {
+          tier: string;
+          amount: number;
+          updated_at: string;
+        };
+        Insert: {
+          tier: string;
+          amount?: number;
+          updated_at?: string;
+        };
+        Update: {
+          tier?: string;
+          amount?: number;
+          updated_at?: string;
+        };
+        Relationships: [];
+      };
     };
     Views: Record<string, never>;
     Functions: Record<string, never>;

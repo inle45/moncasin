@@ -10,12 +10,13 @@ import {
 } from "react";
 import {
   BET_OPTIONS,
+  DEFAULT_AUTO_SPINS,
   DEFAULT_BET,
   FREE_SPINS_AWARD,
+  FREE_SPIN_MULTIPLIER,
   INITIAL_BALANCE,
   REEL_STAGGER_MS,
   SPIN_DURATION_MS,
-  SYMBOLS,
 } from "@/utils/slot/constants";
 import {
   evaluateSpin,
@@ -26,6 +27,8 @@ import {
 import type { Grid, SpinPhase, SpinResult } from "@/utils/slot/types";
 import { fetchProfile, updateProfileBalance } from "@/utils/supabase/profiles";
 import { createClient, DEMO_MODE, safeGetUser } from "@/utils/supabase/client";
+import { useProgressiveJackpots } from "@/hooks/useProgressiveJackpots";
+import { useSlotSounds } from "@/hooks/useSlotSounds";
 
 function randomGrid(): Grid {
   return Array.from({ length: 3 }, () =>
@@ -49,6 +52,8 @@ function applyDemoState(
 
 export function useSlotMachine() {
   const demo = DEMO_MODE;
+  const sounds = useSlotSounds();
+  const jackpots = useProgressiveJackpots();
 
   const [balance, setBalance] = useState(INITIAL_BALANCE);
   const [bet, setBet] = useState(DEFAULT_BET);
@@ -59,6 +64,9 @@ export function useSlotMachine() {
   const [lastResult, setLastResult] = useState<SpinResult | null>(null);
   const [winMessage, setWinMessage] = useState<string | null>(null);
   const [comboCount, setComboCount] = useState(0);
+  const [showCoinRain, setShowCoinRain] = useState(false);
+  const [autoSpinActive, setAutoSpinActive] = useState(false);
+  const [autoSpinsLeft, setAutoSpinsLeft] = useState(0);
 
   const [profileLoading, setProfileLoading] = useState(!demo);
   const [isAuthenticated, setIsAuthenticated] = useState(false);
@@ -67,16 +75,23 @@ export function useSlotMachine() {
   const [isDemoMode, setIsDemoMode] = useState(demo);
 
   const finalGridRef = useRef<Grid>(displayGrid);
-  const stoppedRef = useRef([true, true, true]);
+  const stoppedRef = useRef([false, false, false]);
   const tickRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const freeSpinModeRef = useRef(false);
   const balanceRef = useRef(INITIAL_BALANCE);
   const userIdRef = useRef<string | null>(null);
   const spinStartBalanceRef = useRef(INITIAL_BALANCE);
+  const autoSpinRef = useRef(false);
+  const phaseRef = useRef<SpinPhase>("idle");
+  const spinRef = useRef<() => void>(() => {});
 
   useEffect(() => {
     balanceRef.current = balance;
   }, [balance]);
+
+  useEffect(() => {
+    phaseRef.current = phase;
+  }, [phase]);
 
   const winningCells = useMemo(
     () => (lastResult ? getWinningCells(lastResult) : new Set<string>()),
@@ -139,9 +154,6 @@ export function useSlotMachine() {
           setIsAuthenticated,
           setProfileLoading
         );
-        if (timedOut) {
-          setProfileError(null);
-        }
         setIsDemoMode(true);
         return;
       }
@@ -155,9 +167,7 @@ export function useSlotMachine() {
     init();
 
     const supabase = createClient();
-    if (!supabase) {
-      return;
-    }
+    if (!supabase) return;
 
     const {
       data: { subscription },
@@ -215,13 +225,22 @@ export function useSlotMachine() {
     }
   }, []);
 
+  const stopAutoSpin = useCallback(() => {
+    autoSpinRef.current = false;
+    setAutoSpinActive(false);
+    setAutoSpinsLeft(0);
+  }, []);
+
   const spin = useCallback(() => {
-    if (phase === "spinning" || phase === "revealing") return;
+    if (phaseRef.current === "spinning" || phaseRef.current === "revealing") {
+      return;
+    }
     if (profileLoading || isSyncing) return;
 
     const isFree = freeSpinsLeft > 0;
     if (!isFree && balanceRef.current < bet) {
       setWinMessage("Solde insuffisant !");
+      stopAutoSpin();
       setTimeout(() => setWinMessage(null), 2000);
       return;
     }
@@ -229,8 +248,11 @@ export function useSlotMachine() {
     clearTick();
     setWinMessage(null);
     setLastResult(null);
+    setShowCoinRain(false);
     setPhase("spinning");
+    phaseRef.current = "spinning";
     stoppedRef.current = [false, false, false];
+    sounds.playSpinStart();
 
     spinStartBalanceRef.current = balanceRef.current;
 
@@ -238,8 +260,13 @@ export function useSlotMachine() {
       const afterBet = balanceRef.current - bet;
       setBalance(afterBet);
       balanceRef.current = afterBet;
+      void jackpots.contribute(bet);
     } else {
       setFreeSpinsLeft((n) => Math.max(0, n - 1));
+    }
+
+    if (autoSpinRef.current) {
+      setAutoSpinsLeft((n) => Math.max(0, n - 1));
     }
 
     const finalGrid = generateGrid();
@@ -255,10 +282,11 @@ export function useSlotMachine() {
           )
         )
       );
-    }, 80);
+    }, 70);
 
     const stopReel = (colIndex: number) => {
       stoppedRef.current[colIndex] = true;
+      sounds.playReelStop(colIndex);
       setDisplayGrid(
         Array.from({ length: 3 }, (_, ri) =>
           Array.from({ length: 3 }, (_, ci) =>
@@ -275,21 +303,41 @@ export function useSlotMachine() {
     setTimeout(() => stopReel(1), t0 + REEL_STAGGER_MS);
     setTimeout(() => stopReel(2), t0 + REEL_STAGGER_MS * 2);
 
-    const finishAt = t0 + REEL_STAGGER_MS * 2 + 400;
+    const finishAt = t0 + REEL_STAGGER_MS * 2 + 450;
     setTimeout(async () => {
       clearTick();
       stoppedRef.current = [true, true, true];
       setDisplayGrid(finalGrid);
       setPhase("revealing");
+      phaseRef.current = "revealing";
 
       const activeFreeMode = isFree || freeSpinModeRef.current;
-      const result = evaluateSpin(finalGrid, bet, activeFreeMode);
+      let result = evaluateSpin(finalGrid, bet, activeFreeMode);
+
+      if (result.jackpotWin) {
+        const poolPayout = await jackpots.claim(result.jackpotWin.tier);
+        const lineBase = result.lineWins.reduce((s, w) => s + w.payout, 0);
+        const lineTotalJack = Math.floor(
+          lineBase *
+            result.comboMultiplier *
+            (activeFreeMode ? FREE_SPIN_MULTIPLIER : 1)
+        );
+        result = {
+          ...result,
+          jackpotWin: { ...result.jackpotWin, poolPayout },
+          totalPayout: lineTotalJack + poolPayout,
+        };
+        sounds.playJackpot();
+      }
+
       setLastResult(result);
       setComboCount(result.lineWins.length);
 
       const betDebited = isFree ? 0 : bet;
       const finalBalance =
         spinStartBalanceRef.current - betDebited + result.totalPayout;
+      const jackpotTotal = result.jackpotWin?.poolPayout ?? 0;
+      const lineTotal = result.totalPayout - jackpotTotal;
 
       setBalance(finalBalance);
       balanceRef.current = finalBalance;
@@ -301,6 +349,8 @@ export function useSlotMachine() {
           balanceRef.current = spinStartBalanceRef.current;
           setWinMessage("Erreur de sauvegarde — solde restauré.");
           setPhase("idle");
+          phaseRef.current = "idle";
+          stopAutoSpin();
           return;
         }
       }
@@ -309,27 +359,36 @@ export function useSlotMachine() {
         freeSpinModeRef.current = true;
         setFreeSpinMode(true);
         setFreeSpinsLeft((n) => n + FREE_SPINS_AWARD);
+        sounds.playFreeSpins();
         setWinMessage(
-          `FREE SPINS ! +${FREE_SPINS_AWARD} tours · multiplicateur x2`
+          `FREE SPINS ! +${FREE_SPINS_AWARD} tours · multiplicateur ×2`
         );
       } else if (result.jackpotWin) {
         setWinMessage(
-          `JACKPOT ${result.jackpotWin.tier.toUpperCase()} · +${result.jackpotWin.payout.toLocaleString("fr-FR")} jetons`
+          `JACKPOT ${result.jackpotWin.tier.toUpperCase()} · +${jackpotTotal.toLocaleString("fr-FR")} jetons`
         );
       } else if (result.lineWins.length > 0) {
+        sounds.playWin();
         const combo =
           result.lineWins.length > 1
             ? ` · COMBO ×${result.comboMultiplier}`
             : "";
         setWinMessage(
-          `+${result.totalPayout.toLocaleString("fr-FR")} jetons${combo}`
+          `+${lineTotal.toLocaleString("fr-FR")} jetons${combo}`
         );
       }
 
+      if (lineTotal + jackpotTotal > 0) {
+        setShowCoinRain(true);
+      }
+
       setPhase("celebrating");
+      phaseRef.current = "celebrating";
 
       setTimeout(() => {
         setPhase("idle");
+        phaseRef.current = "idle";
+        setShowCoinRain(false);
         setFreeSpinsLeft((remaining) => {
           if (remaining <= 0 && !result.triggersFreeSpins) {
             freeSpinModeRef.current = false;
@@ -337,7 +396,16 @@ export function useSlotMachine() {
           }
           return remaining;
         });
-      }, 2200);
+
+        if (autoSpinRef.current) {
+          setAutoSpinsLeft((left) => {
+            if (left <= 0 || balanceRef.current < bet) {
+              stopAutoSpin();
+            }
+            return left;
+          });
+        }
+      }, 2400);
     }, finishAt);
   }, [
     bet,
@@ -345,10 +413,50 @@ export function useSlotMachine() {
     freeSpinsLeft,
     isDemoMode,
     isSyncing,
+    jackpots,
     persistBalance,
-    phase,
     profileLoading,
+    sounds,
+    stopAutoSpin,
   ]);
+
+  useEffect(() => {
+    spinRef.current = spin;
+  }, [spin]);
+
+  useEffect(() => {
+    if (phase !== "idle" || !autoSpinRef.current) return;
+    if (autoSpinsLeft <= 0 && freeSpinsLeft <= 0) return;
+    if (profileLoading || isSyncing) return;
+    if (balanceRef.current < bet && freeSpinsLeft <= 0) {
+      stopAutoSpin();
+      return;
+    }
+
+    const timer = setTimeout(() => spinRef.current(), 700);
+    return () => clearTimeout(timer);
+  }, [
+    phase,
+    autoSpinsLeft,
+    freeSpinsLeft,
+    bet,
+    profileLoading,
+    isSyncing,
+    stopAutoSpin,
+  ]);
+
+  const toggleAutoSpin = useCallback(() => {
+    if (autoSpinRef.current) {
+      stopAutoSpin();
+      return;
+    }
+    autoSpinRef.current = true;
+    setAutoSpinActive(true);
+    setAutoSpinsLeft(DEFAULT_AUTO_SPINS);
+    if (phaseRef.current === "idle") {
+      spinRef.current();
+    }
+  }, [stopAutoSpin]);
 
   const changeBet = useCallback(
     (delta: number) => {
@@ -375,9 +483,15 @@ export function useSlotMachine() {
     winMessage,
     comboCount,
     winningCells,
+    showCoinRain,
+    autoSpinActive,
+    autoSpinsLeft,
+    jackpotPools: jackpots.pools,
+    jackpotsLoading: jackpots.loading,
     spin,
     changeBet,
-    symbols: SYMBOLS,
+    toggleAutoSpin,
+    stopAutoSpin,
     profileLoading,
     isAuthenticated,
     isSyncing,

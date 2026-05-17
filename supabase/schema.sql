@@ -1,4 +1,4 @@
--- =============================================================================
+S -- =============================================================================
 -- MonCasin.fr — Schéma Supabase (profiles + auth)
 -- Exécuter dans : Supabase Dashboard → SQL Editor → New query → Run
 -- =============================================================================
@@ -97,3 +97,51 @@ create policy "Profiles: mise à jour par le propriétaire"
 -- Pas d''insert manuel côté client (réservé au trigger signup)
 drop policy if exists "Profiles: pas d''insert client" on public.profiles;
 -- (aucune policy INSERT = refus par défaut pour authenticated)
+
+-- =============================================================================
+-- Jackpots progressifs (machine à sous)
+-- =============================================================================
+
+create table if not exists public.progressive_jackpots (
+  tier text not null,
+  amount bigint not null default 1000 check (amount >= 0),
+  updated_at timestamptz not null default now(),
+  constraint progressive_jackpots_pkey primary key (tier),
+  constraint progressive_jackpots_tier_check check (
+    tier in ('mini', 'minor', 'major', 'grand')
+  )
+);
+
+comment on table public.progressive_jackpots is 'Cagnottes progressives partagées (slot)';
+
+insert into public.progressive_jackpots (tier, amount)
+values
+  ('mini', 5000),
+  ('minor', 25000),
+  ('major', 100000),
+  ('grand', 500000)
+on conflict (tier) do nothing;
+
+alter table public.progressive_jackpots enable row level security;
+
+drop policy if exists "Jackpots: lecture publique" on public.progressive_jackpots;
+create policy "Jackpots: lecture publique"
+  on public.progressive_jackpots
+  for select
+  to anon, authenticated
+  using (true);
+
+drop policy if exists "Jackpots: insert authentifié" on public.progressive_jackpots;
+create policy "Jackpots: insert authentifié"
+  on public.progressive_jackpots
+  for insert
+  to authenticated
+  with check (true);
+
+drop policy if exists "Jackpots: mise à jour authentifiée" on public.progressive_jackpots;
+create policy "Jackpots: mise à jour authentifiée"
+  on public.progressive_jackpots
+  for update
+  to authenticated
+  using (true)
+  with check (true);

@@ -8,8 +8,11 @@ interface SlotControlsProps {
   isSpinning: boolean;
   canSpin: boolean;
   freeSpinsLeft: number;
+  autoSpinActive: boolean;
+  autoSpinsLeft: number;
   onBetChange: (delta: number) => void;
   onSpin: () => void;
+  onToggleAutoSpin: () => void;
 }
 
 export function SlotControls({
@@ -17,8 +20,11 @@ export function SlotControls({
   isSpinning,
   canSpin,
   freeSpinsLeft,
+  autoSpinActive,
+  autoSpinsLeft,
   onBetChange,
   onSpin,
+  onToggleAutoSpin,
 }: SlotControlsProps) {
   const betIndex = BET_OPTIONS.indexOf(bet as (typeof BET_OPTIONS)[number]);
   const isMinBet = betIndex <= 0;
@@ -27,24 +33,25 @@ export function SlotControls({
   return (
     <div
       className={cn(
-        "fixed bottom-0 left-0 right-0 z-40 border-t border-white/[0.08]",
-        "bg-casino-bg/90 px-4 pb-[max(1rem,env(safe-area-inset-bottom))] pt-4 backdrop-blur-2xl"
+        "fixed bottom-0 left-0 right-0 z-40 border-t border-casino-gold/20",
+        "bg-gradient-to-t from-black via-zinc-950/95 to-zinc-900/90",
+        "px-4 pb-[max(1rem,env(safe-area-inset-bottom))] pt-4 backdrop-blur-2xl"
       )}
     >
-      <div className="mx-auto flex max-w-lg flex-col gap-4 sm:max-w-2xl">
-        {/* Sélecteur de mise */}
-        <div className="flex items-center justify-between rounded-xl border border-white/[0.08] bg-white/[0.04] p-3 backdrop-blur-xl">
+      <div className="mx-auto flex max-w-lg flex-col gap-3 sm:max-w-2xl">
+        <div className="flex items-center justify-between rounded-xl border border-white/10 bg-zinc-900/60 p-3">
           <span className="text-xs font-semibold uppercase tracking-wider text-white/50">
             Mise
           </span>
           <div className="flex items-center gap-3">
             <button
               type="button"
-              disabled={isSpinning || isMinBet}
+              disabled={isSpinning || isMinBet || autoSpinActive}
               onClick={() => onBetChange(-1)}
               className={cn(
-                "flex h-10 w-10 items-center justify-center rounded-lg border border-white/10 bg-white/5 text-lg font-bold",
-                "transition-all hover:border-casino-purple-neon/40 active:scale-95",
+                "flex h-10 w-10 items-center justify-center rounded-lg border border-casino-gold/30",
+                "bg-zinc-800 text-lg font-bold text-casino-gold-neon",
+                "transition-all hover:bg-zinc-700 active:scale-95",
                 "disabled:cursor-not-allowed disabled:opacity-30"
               )}
               aria-label="Diminuer la mise"
@@ -56,11 +63,12 @@ export function SlotControls({
             </span>
             <button
               type="button"
-              disabled={isSpinning || isMaxBet}
+              disabled={isSpinning || isMaxBet || autoSpinActive}
               onClick={() => onBetChange(1)}
               className={cn(
-                "flex h-10 w-10 items-center justify-center rounded-lg border border-white/10 bg-white/5 text-lg font-bold",
-                "transition-all hover:border-casino-purple-neon/40 active:scale-95",
+                "flex h-10 w-10 items-center justify-center rounded-lg border border-casino-gold/30",
+                "bg-zinc-800 text-lg font-bold text-casino-gold-neon",
+                "transition-all hover:bg-zinc-700 active:scale-95",
                 "disabled:cursor-not-allowed disabled:opacity-30"
               )}
               aria-label="Augmenter la mise"
@@ -70,33 +78,48 @@ export function SlotControls({
           </div>
           {freeSpinsLeft > 0 && (
             <span className="rounded-full border border-cyan-400/40 bg-cyan-500/15 px-2.5 py-1 text-[10px] font-bold uppercase text-cyan-300">
-              Gratuit · {freeSpinsLeft}
+              Free · {freeSpinsLeft}
             </span>
           )}
         </div>
 
-        {/* Bouton SPIN */}
-        <button
-          type="button"
-          disabled={!canSpin || isSpinning}
-          onClick={onSpin}
-          className={cn(
-            "relative w-full overflow-hidden rounded-2xl py-4 font-display text-xl font-extrabold uppercase tracking-[0.2em]",
-            "border-2 border-casino-gold-neon/50 transition-all duration-300",
-            "bg-gradient-to-r from-casino-purple via-casino-purple-neon to-casino-gold/80 text-white",
-            "shadow-neon-purple",
-            !isSpinning && canSpin && "animate-spin-pulse hover:scale-[1.02] active:scale-[0.98]",
-            isSpinning && "opacity-80 scale-[0.98] cursor-wait",
-            (!canSpin || isSpinning) && "cursor-not-allowed opacity-50"
-          )}
-        >
-          <span className="relative z-10">
+        <div className="grid grid-cols-[1fr_auto] gap-2">
+          <button
+            type="button"
+            disabled={!canSpin || isSpinning}
+            onClick={onSpin}
+            className={cn(
+              "relative overflow-hidden rounded-2xl py-4 font-display text-xl font-extrabold uppercase tracking-[0.15em]",
+              "border-2 border-casino-gold-neon/60",
+              "bg-gradient-to-b from-amber-400 via-casino-gold to-amber-700 text-zinc-950",
+              "shadow-[0_0_28px_rgba(255,215,0,0.4),inset_0_2px_0_rgba(255,255,255,0.35)]",
+              !isSpinning && canSpin && "animate-spin-pulse hover:brightness-110 active:scale-[0.98]",
+              (isSpinning || !canSpin) && "cursor-not-allowed opacity-50"
+            )}
+          >
             {isSpinning ? "…" : freeSpinsLeft > 0 ? "FREE SPIN" : "SPIN"}
-          </span>
-          {!isSpinning && canSpin && (
-            <div className="pointer-events-none absolute inset-0 bg-gradient-to-r from-transparent via-white/20 to-transparent opacity-0 transition-opacity hover:opacity-100" />
-          )}
-        </button>
+          </button>
+
+          <button
+            type="button"
+            disabled={isSpinning && !autoSpinActive}
+            onClick={onToggleAutoSpin}
+            className={cn(
+              "flex min-w-[5.5rem] flex-col items-center justify-center rounded-2xl px-3 py-2",
+              "border-2 font-display text-xs font-bold uppercase tracking-wider",
+              autoSpinActive
+                ? "border-red-400/60 bg-red-950/80 text-red-200"
+                : "border-casino-purple-neon/50 bg-violet-950/80 text-casino-purple-glow"
+            )}
+          >
+            <span>{autoSpinActive ? "STOP" : "AUTO"}</span>
+            {autoSpinActive && (
+              <span className="mt-0.5 font-mono text-[10px] tabular-nums">
+                {autoSpinsLeft}
+              </span>
+            )}
+          </button>
+        </div>
       </div>
     </div>
   );

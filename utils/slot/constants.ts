@@ -1,4 +1,5 @@
-import type { JackpotTier, PaylineDef, SlotSymbol, SlotSymbolId } from "./types";
+import type { JackpotTier, SlotSymbol, SlotSymbolId } from "./types";
+import { PAYLINE_COUNT, buildPaylines } from "./paylines";
 
 export const INITIAL_BALANCE = 1000;
 
@@ -18,7 +19,7 @@ export const SYMBOLS: Record<SlotSymbolId, SlotSymbol> = {
   seven: { id: "seven", emoji: "7️⃣", label: "Sept" },
   crown: { id: "crown", emoji: "👑", label: "Couronne" },
   diamond: { id: "diamond", emoji: "💎", label: "Diamant" },
-  i4z: { id: "i4z", emoji: "⚡", label: "i4z Wild" },
+  i4z: { id: "i4z", emoji: "🃏", label: "Joker Wild" },
   scatter: { id: "scatter", emoji: "⭐️", label: "Scatter" },
 };
 
@@ -44,13 +45,8 @@ export const LINE_PAYOUTS: Record<SlotSymbolId, number> = {
   scatter: 0,
 };
 
-export const PAYLINES: PaylineDef[] = [
-  { id: "top", cells: [[0, 0], [0, 1], [0, 2]] },
-  { id: "mid", cells: [[1, 0], [1, 1], [1, 2]] },
-  { id: "bot", cells: [[2, 0], [2, 1], [2, 2]] },
-  { id: "diag-down", cells: [[0, 0], [1, 1], [2, 2]] },
-  { id: "diag-up", cells: [[2, 0], [1, 1], [0, 2]] },
-];
+export const PAYLINES = buildPaylines();
+export { PAYLINE_COUNT };
 
 export const JACKPOT_TIERS: {
   tier: JackpotTier;
@@ -99,5 +95,8 @@ export const JACKPOT_TIERS: {
   },
 ];
 
-export const SPIN_DURATION_MS = 1800;
-export const REEL_STAGGER_MS = 200;
+export const SPIN_DURATION_MS = 2200;
+export const REEL_STAGGER_MS = 280;
+
+export const AUTO_SPIN_OPTIONS = [10, 25, 50, 100] as const;
+export const DEFAULT_AUTO_SPINS = 25;

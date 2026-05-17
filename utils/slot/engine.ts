@@ -92,7 +92,8 @@ function evaluateJackpot(grid: Grid, bet: number): JackpotWin | null {
       return {
         tier: tier.tier,
         multiplier: tier.multiplier,
-        payout: bet * tier.multiplier,
+        payout: 0,
+        poolPayout: 0,
       };
     }
   }
@@ -123,7 +124,8 @@ export function evaluateSpin(
   const combo = comboMultiplier(lineWins.length);
   const freeMult = freeSpinMode ? FREE_SPIN_MULTIPLIER : 1;
   const lineTotal = Math.floor(baseLinePayout * combo * freeMult);
-  const jackpotTotal = jackpotWin?.payout ?? 0;
+  const jackpotTotal =
+    (jackpotWin?.poolPayout ?? 0) + (jackpotWin?.payout ?? 0);
   const totalPayout = lineTotal + jackpotTotal;
 
   return {

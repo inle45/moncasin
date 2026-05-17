@@ -44,6 +44,8 @@ const config: Config = {
         "win-flash": "win-flash 0.6s ease-in-out infinite",
         "auth-message": "auth-message 0.35s ease-out forwards",
         "confetti-fall": "confetti-fall 2.2s ease-out forwards",
+        "coin-fall": "coin-fall 2.4s ease-in forwards",
+        "reel-column-blur": "reel-column-blur 0.15s linear infinite",
       },
       keyframes: {
         "pulse-glow": {
@@ -77,6 +79,15 @@ const config: Config = {
         "confetti-fall": {
           "0%": { transform: "translateY(-10vh) rotate(0deg)", opacity: "1" },
           "100%": { transform: "translateY(110vh) rotate(720deg)", opacity: "0" },
+        },
+        "coin-fall": {
+          "0%": { transform: "translateY(-20%) rotate(0deg)", opacity: "1" },
+          "100%": { transform: "translateY(120vh) rotate(540deg)", opacity: "0" },
+        },
+        "reel-column-blur": {
+          "0%": { transform: "translateY(-4px)", filter: "blur(0px)" },
+          "50%": { transform: "translateY(4px)", filter: "blur(1px)" },
+          "100%": { transform: "translateY(-4px)", filter: "blur(0px)" },
         },
       },
     },

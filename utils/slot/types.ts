@@ -32,6 +32,8 @@ export interface JackpotWin {
   tier: "mini" | "minor" | "major" | "grand";
   multiplier: number;
   payout: number;
+  /** Montant issu de la cagnotte progressive Supabase */
+  poolPayout: number;
 }
 
 export interface SpinResult {
