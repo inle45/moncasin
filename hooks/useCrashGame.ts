@@ -1,49 +1,26 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { INITIAL_BALANCE } from "@/utils/slot/constants";
 import {
   CRASH_BET_OPTIONS,
   DEFAULT_CRASH_BET,
 } from "@/utils/crash/constants";
-import {
-  calculateCashoutPayout,
-  formatMultiplier,
-} from "@/utils/crash/engine";
-import {
-  LocalCrashSimulator,
-  LOCAL_CRASH_TICK_MS,
-} from "@/utils/crash/local-simulator";
 import type { CrashPhase } from "@/utils/crash/types";
-import { useCrashSounds } from "@/hooks/useCrashSounds";
-import { placeCrashBet, cashoutCrash } from "@/utils/supabase/crash-room";
-import { safeGetUser } from "@/utils/supabase/client";
-import { fetchProfile } from "@/utils/supabase/profiles";
 
-const DEMO_BALANCE_KEY = "moncasin_demo_shop_balance";
-const BALANCE_TIMEOUT_MS = 2000;
-const LOCAL_USERNAME = "Toi";
-
-function loadStoredBalance(): number {
-  if (typeof window === "undefined") return INITIAL_BALANCE;
-  const raw = localStorage.getItem(DEMO_BALANCE_KEY);
-  const n = raw ? Number(raw) : INITIAL_BALANCE;
-  return Number.isFinite(n) && n >= 0 ? n : INITIAL_BALANCE;
-}
-
-function saveStoredBalance(amount: number) {
-  if (typeof window === "undefined") return;
-  localStorage.setItem(DEMO_BALANCE_KEY, String(Math.max(0, Math.floor(amount))));
-}
+const START_BALANCE = 1000;
+const BETTING_MS = 5000;
+const CRASH_DISPLAY_MS = 2500;
 
 export type { CrashPhase };
 
-/** Mode local prioritaire — le jeu tourne sans Supabase. */
-export function useCrashGame() {
-  const sounds = useCrashSounds();
-  const simRef = useRef<LocalCrashSimulator | null>(null);
+type Mode = "betting" | "flying" | "crashed";
 
-  const [balance, setBalance] = useState(INITIAL_BALANCE);
+/**
+ * MODE SECOURS — aucun fetch, aucun Supabase.
+ * setInterval brut dès le montage : solde 1000, chrono 5→0, multiplicateur qui monte.
+ */
+export function useCrashGame() {
+  const [balance, setBalance] = useState(START_BALANCE);
   const [bet, setBet] = useState(DEFAULT_CRASH_BET);
   const [phase, setPhase] = useState<CrashPhase>("betting");
   const [multiplier, setMultiplier] = useState(1);
@@ -57,173 +34,136 @@ export function useCrashGame() {
   const [hasPlacedBet, setHasPlacedBet] = useState(false);
   const [activeBet, setActiveBet] = useState(0);
   const [hasCashedOut, setHasCashedOut] = useState(false);
-  const [userId, setUserId] = useState<string | null>(null);
 
-  /** Jamais de « … » sur le solde — affichage immédiat. */
-  const [profileLoading] = useState(false);
-  const [isSyncing] = useState(false);
-  const [profileError] = useState<string | null>(null);
-  const [isLocalPlay] = useState(true);
+  const modeRef = useRef<Mode>("betting");
+  const bettingEndsRef = useRef(0);
+  const flyingStartRef = useRef(0);
+  const crashedStartRef = useRef(0);
+  const targetCrashRef = useRef(2.5);
+  const roundRef = useRef(1);
+  const placedRef = useRef(false);
+  const cashedRef = useRef(false);
 
-  const cashedOutRef = useRef(false);
-  const hasPlacedBetRef = useRef(false);
+  // /* Supabase / fetch désactivés
+  // import { placeCrashBet, cashoutCrash } from "@/utils/supabase/crash-room";
+  // import { safeGetUser } from "@/utils/supabase/client";
+  // import { fetchProfile } from "@/utils/supabase/profiles";
+  // import { fetchCrashLoop } from "@/utils/crash/api-client";
+  // import { LocalCrashSimulator } from "@/utils/crash/local-simulator";
+  // import { useCrashSounds } from "@/hooks/useCrashSounds";
+  // */
 
   useEffect(() => {
-    setBalance(loadStoredBalance());
-  }, []);
-
-  useEffect(() => {
-    if (!simRef.current) {
-      simRef.current = new LocalCrashSimulator();
-    }
-
-    const sim = simRef.current;
+    const now = Date.now();
+    setBalance(START_BALANCE);
+    modeRef.current = "betting";
+    bettingEndsRef.current = now + BETTING_MS;
+    targetCrashRef.current = 1.5 + Math.random() * 4;
+    setBettingSecondsLeft(5);
+    setPhase("betting");
+    setMultiplier(1);
+    setCurvePoints([1]);
 
     const id = setInterval(() => {
-      const frame = sim.tick();
+      const t = Date.now();
 
-      setPhase(frame.phase);
-      setBettingSecondsLeft(frame.bettingSecondsLeft);
-      setMultiplier(frame.multiplier);
-      setCrashPoint(frame.crashPoint);
-      setRoundNumber(frame.roundNumber);
-
-      if (frame.phase === "flying") {
-        setCurvePoints((pts) => {
-          const next = [...pts, frame.multiplier];
-          return next.length > 80 ? next.slice(-80) : next;
-        });
-      }
-
-      if (frame.justLaunched) {
-        sounds.playLaunch();
+      if (modeRef.current === "betting") {
+        const left = Math.max(0, Math.ceil((bettingEndsRef.current - t) / 1000));
+        setBettingSecondsLeft(left);
+        setPhase("betting");
+        setMultiplier(1);
+        setCrashPoint(null);
         setCurvePoints([1]);
-      }
 
-      if (frame.justCrashed && frame.crashPoint) {
-        sounds.playCrash();
-        setCrashHistory((h) =>
-          [frame.crashPoint!, ...h.filter((x) => x !== frame.crashPoint)].slice(
-            0,
-            12
-          )
-        );
-        setMessage(`Crash à ${formatMultiplier(frame.crashPoint)} !`);
-        setTimeout(() => setMessage(null), 2500);
-
-        if (hasPlacedBetRef.current && !cashedOutRef.current) {
-          setMessage("Tu n'as pas cashout à temps…");
-          setTimeout(() => setMessage(null), 2500);
+        if (t >= bettingEndsRef.current) {
+          modeRef.current = "flying";
+          flyingStartRef.current = t;
+          setPhase("flying");
         }
+        return;
       }
 
-      if (frame.justNewRound) {
-        cashedOutRef.current = false;
-        setHasPlacedBet(false);
-        setActiveBet(0);
-        setHasCashedOut(false);
-        setCurvePoints([1]);
-      }
-    }, LOCAL_CRASH_TICK_MS);
+      if (modeRef.current === "flying") {
+        const sec = (t - flyingStartRef.current) / 1000;
+        const m = Math.floor(Math.exp(0.12 * sec) * 100) / 100;
+        setPhase("flying");
+        setMultiplier(m);
+        setBettingSecondsLeft(0);
+        setCurvePoints((pts) => {
+          const next = [...pts, m];
+          return next.length > 60 ? next.slice(-60) : next;
+        });
 
-    return () => clearInterval(id);
-  }, [sounds]);
-
-  useEffect(() => {
-    hasPlacedBetRef.current = hasPlacedBet;
-  }, [hasPlacedBet]);
-
-  useEffect(() => {
-    let cancelled = false;
-
-    const timeout = setTimeout(() => {
-      if (!cancelled) {
-        setBalance((b) => (b > 0 ? b : INITIAL_BALANCE));
-      }
-    }, BALANCE_TIMEOUT_MS);
-
-    (async () => {
-      try {
-        const { user } = await safeGetUser();
-        if (cancelled || !user) return;
-
-        setUserId(user.id);
-
-        const profileResult = await Promise.race([
-          fetchProfile(user.id),
-          new Promise<{ profile: null; error: string | null }>((resolve) =>
-            setTimeout(
-              () => resolve({ profile: null, error: "timeout" }),
-              BALANCE_TIMEOUT_MS
-            )
-          ),
-        ]);
-
-        if (!cancelled && profileResult.profile) {
-          const bal = Number(profileResult.profile.balance);
-          if (Number.isFinite(bal) && bal >= 0) {
-            setBalance(bal);
-            saveStoredBalance(bal);
+        if (m >= targetCrashRef.current) {
+          modeRef.current = "crashed";
+          crashedStartRef.current = t;
+          setCrashPoint(targetCrashRef.current);
+          setPhase("crashed");
+          setCrashHistory((h) =>
+            [targetCrashRef.current, ...h].slice(0, 8)
+          );
+          if (placedRef.current && !cashedRef.current) {
+            setMessage("Crash ! Mise perdue.");
+            setTimeout(() => setMessage(null), 2000);
           }
         }
-      } catch {
-        /* garde le solde local */
-      } finally {
-        clearTimeout(timeout);
+        return;
       }
-    })();
 
-    return () => {
-      cancelled = true;
-      clearTimeout(timeout);
-    };
+      if (modeRef.current === "crashed") {
+        setPhase("crashed");
+        setMultiplier(targetCrashRef.current);
+        if (t >= crashedStartRef.current + CRASH_DISPLAY_MS) {
+          roundRef.current += 1;
+          setRoundNumber(roundRef.current);
+          modeRef.current = "betting";
+          bettingEndsRef.current = t + BETTING_MS;
+          targetCrashRef.current = 1.5 + Math.random() * 4;
+          placedRef.current = false;
+          cashedRef.current = false;
+          setHasPlacedBet(false);
+          setHasCashedOut(false);
+          setActiveBet(0);
+          setBettingSecondsLeft(5);
+          setPhase("betting");
+          setMultiplier(1);
+          setCrashPoint(null);
+          setCurvePoints([1]);
+        }
+      }
+    }, 100);
+
+    return () => clearInterval(id);
   }, []);
 
   const placeBet = useCallback(() => {
-    if (phase !== "betting" || bettingSecondsLeft <= 0) return;
-    if (hasPlacedBet) return;
-    if (balance < bet) {
-      setMessage("Solde insuffisant.");
-      setTimeout(() => setMessage(null), 2000);
-      return;
-    }
+    if (modeRef.current !== "betting" || bettingSecondsLeft <= 0) return;
+    if (placedRef.current) return;
+    if (balance < bet) return;
 
-    const nextBalance = balance - bet;
-    setBalance(nextBalance);
-    saveStoredBalance(nextBalance);
+    placedRef.current = true;
     setHasPlacedBet(true);
     setActiveBet(bet);
-    setHasCashedOut(false);
-    cashedOutRef.current = false;
-    setMessage(`Mise de ${bet} jetons !`);
-    setTimeout(() => setMessage(null), 2000);
-
-    if (userId) void placeCrashBet(bet);
-  }, [balance, bet, bettingSecondsLeft, hasPlacedBet, phase, userId]);
+    setBalance((b) => b - bet);
+    setMessage(`Mise ${bet} jetons`);
+    setTimeout(() => setMessage(null), 1500);
+  }, [balance, bet, bettingSecondsLeft]);
 
   const cashout = useCallback(() => {
-    if (phase !== "flying" || !hasPlacedBet || hasCashedOut) return;
-    if (cashedOutRef.current) return;
+    if (modeRef.current !== "flying" || !placedRef.current) return;
+    if (cashedRef.current) return;
 
-    cashedOutRef.current = true;
+    cashedRef.current = true;
     setHasCashedOut(true);
-
-    const payout = calculateCashoutPayout(activeBet, multiplier);
-    const nextBalance = balance + payout;
-    setBalance(nextBalance);
-    saveStoredBalance(nextBalance);
-
-    sounds.playCashout();
-    setMessage(
-      `Cashout ${formatMultiplier(multiplier)} · +${payout.toLocaleString("fr-FR")} jetons`
-    );
-
-    if (userId) void cashoutCrash(multiplier);
-  }, [activeBet, balance, hasCashedOut, hasPlacedBet, multiplier, phase, sounds, userId]);
+    const win = Math.floor(activeBet * multiplier);
+    setBalance((b) => b + win);
+    setMessage(`Cashout +${win} jetons`);
+    setTimeout(() => setMessage(null), 2000);
+  }, [activeBet, multiplier]);
 
   const changeBet = useCallback(
     (delta: number) => {
-      if (phase !== "betting" || hasPlacedBet) return;
+      if (placedRef.current) return;
       const idx = CRASH_BET_OPTIONS.indexOf(
         bet as (typeof CRASH_BET_OPTIONS)[number]
       );
@@ -233,44 +173,8 @@ export function useCrashGame() {
       );
       setBet(CRASH_BET_OPTIONS[next]);
     },
-    [bet, hasPlacedBet, phase]
+    [bet]
   );
-
-  const canPlaceBet =
-    phase === "betting" &&
-    bettingSecondsLeft > 0 &&
-    !hasPlacedBet &&
-    balance >= bet;
-
-  const canCashout =
-    phase === "flying" && hasPlacedBet && !hasCashedOut && !cashedOutRef.current;
-
-  const potentialWin = calculateCashoutPayout(
-    activeBet || bet,
-    phase === "flying" ? multiplier : 1
-  );
-
-  const roundBets =
-    hasPlacedBet && userId
-      ? [
-          {
-            id: "local-bet",
-            round_id: "local",
-            user_id: userId,
-            username: LOCAL_USERNAME,
-            bet_amount: activeBet,
-            cashout_multiplier: hasCashedOut ? multiplier : null,
-            payout: hasCashedOut
-              ? calculateCashoutPayout(activeBet, multiplier)
-              : null,
-            status: hasCashedOut
-              ? ("cashed_out" as const)
-              : phase === "crashed" && !hasCashedOut
-                ? ("lost" as const)
-                : ("active" as const),
-          },
-        ]
-      : [];
 
   return {
     balance,
@@ -282,22 +186,23 @@ export function useCrashGame() {
     message,
     crashHistory,
     curvePoints,
-    canPlaceBet,
-    canCashout,
-    potentialWin,
+    canPlaceBet:
+      phase === "betting" && bettingSecondsLeft > 0 && !hasPlacedBet && balance >= bet,
+    canCashout: phase === "flying" && hasPlacedBet && !hasCashedOut,
+    potentialWin: Math.floor((activeBet || bet) * multiplier),
     bettingSecondsLeft,
     chronoReady: true,
-    roundBets,
+    roundBets: [],
     presence: [],
     activePlayersCount: hasPlacedBet ? 1 : 0,
     hasPlacedBet,
     hasCashedOut,
     connected: true,
     roundNumber,
-    profileLoading,
-    isSyncing,
-    profileError,
-    isDemoMode: isLocalPlay,
+    profileLoading: false,
+    isSyncing: false,
+    profileError: null,
+    isDemoMode: true,
     placeBet,
     cashout,
     changeBet,
