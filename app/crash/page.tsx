@@ -30,6 +30,7 @@ export default function CrashPage() {
     hasCashedOut,
     connected,
     roundNumber,
+    isDemoMode,
     placeBet,
     cashout,
     changeBet,
@@ -42,10 +43,6 @@ export default function CrashPage() {
         "bg-[radial-gradient(ellipse_at_top,rgba(124,58,237,0.22),transparent_55%),#0B0813]"
       )}
     >
-      <p className="px-4 pt-2 text-center text-[9px] font-bold uppercase tracking-widest text-emerald-400/90">
-        Mode secours v3 · 59262f9
-      </p>
-
       <CrashHeader balance={balance} isLoading={false} />
 
       {message && (
@@ -91,7 +88,7 @@ export default function CrashPage() {
           canCashout={canCashout}
           hasPlacedBet={hasPlacedBet}
           bettingSecondsLeft={bettingSecondsLeft}
-          isDemoMode={true}
+          isDemoMode={isDemoMode}
           onBetChange={changeBet}
           onPlaceBet={placeBet}
           onCashout={cashout}
