@@ -201,6 +201,7 @@ export async function triggerJackpotRoll(): Promise<TriggerJackpotRollResult> {
     );
 
     if (timedOut || timeoutErr) {
+      console.error("ERREUR CRITIQUE JACKPOT:", { timedOut, timeoutErr });
       const msg = timedOut
         ? "Connexion expirée (RPC trigger_jackpot_roll)"
         : String(timeoutErr);
@@ -227,6 +228,7 @@ export async function triggerJackpotRoll(): Promise<TriggerJackpotRollResult> {
     logJackpotRpc("trigger_jackpot_roll RAW RESPONSE", { rawData, rpcError });
 
     if (rpcError) {
+      console.error("ERREUR CRITIQUE JACKPOT:", rpcError);
       const msg = formatPostgrestError(rpcError);
       return {
         ok: false,
@@ -245,6 +247,11 @@ export async function triggerJackpotRoll(): Promise<TriggerJackpotRollResult> {
     const parsed = parseJackpotRpcPayload(rawData);
 
     if (!parsed.ok) {
+      console.error("ERREUR CRITIQUE JACKPOT:", {
+        type: "rpc_ok_false",
+        message: parsed.error,
+        rawData,
+      });
       return {
         ok: false,
         error: parsed.error ?? "Tirage refusé par le serveur",
@@ -264,6 +271,7 @@ export async function triggerJackpotRoll(): Promise<TriggerJackpotRollResult> {
       debug: { step: "success", rawData },
     };
   } catch (err) {
+    console.error("ERREUR CRITIQUE JACKPOT:", err);
     const msg = err instanceof Error ? err.message : String(err);
     return {
       ok: false,

@@ -310,7 +310,14 @@ export function useJackpotArena() {
             await syncBalance();
           }
         } else {
-          console.warn("[MonCasin Jackpot] trigger_jackpot_roll:", result.error);
+          console.error("ERREUR CRITIQUE JACKPOT:", {
+            error: result.error,
+            debug: result.debug,
+            roundId: current.id,
+            countdownSeconds,
+            started_at: current.started_at,
+            counting_ends_at: current.counting_ends_at,
+          });
           await refreshState();
           const after = roundRef.current;
           if (after?.status === "counting") {

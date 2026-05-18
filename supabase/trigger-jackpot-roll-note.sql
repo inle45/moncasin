@@ -1,0 +1,17 @@
+-- Référence MonCasin — trigger_jackpot_roll + RLS
+--
+-- Le front appelle : supabase.rpc('trigger_jackpot_roll')
+-- Réponse attendue : { "ok": true, "round": { "status": "rolling", ... } }
+--
+-- IMPORTANT : la fonction DOIT être SECURITY DEFINER (comme enter_jackpot_arena),
+-- car les policies RLS du repo n'autorisent que SELECT sur jackpot_rounds / jackpot_bets.
+-- Sans SECURITY DEFINER, UPDATE/INSERT dans la RPC échoue silencieusement ou avec 42501.
+--
+-- GRANT obligatoire :
+--   grant execute on function public.trigger_jackpot_roll() to authenticated;
+-- (optionnel pour tick de secours : anon)
+--
+-- Colonnes chrono côté client (au moins une valide en status = counting) :
+--   started_at timestamptz  → 15 - (now - started_at)
+--   ou counting_ends_at     → ceil(ends_at - now)
+-- Si les deux sont NULL/invalides, le client forçait 15s en boucle (tirage jamais déclenché).

@@ -187,6 +187,7 @@ export interface Database {
           winner_id: string | null;
           winner_payout: number | null;
           winning_ticket: number | null;
+          started_at: string | null;
           counting_ends_at: string | null;
           rolling_started_at: string | null;
           ended_at: string | null;
@@ -202,6 +203,7 @@ export interface Database {
           winner_id?: string | null;
           winner_payout?: number | null;
           winning_ticket?: number | null;
+          started_at?: string | null;
           counting_ends_at?: string | null;
           rolling_started_at?: string | null;
           ended_at?: string | null;
@@ -217,6 +219,7 @@ export interface Database {
           winner_id?: string | null;
           winner_payout?: number | null;
           winning_ticket?: number | null;
+          started_at?: string | null;
           counting_ends_at?: string | null;
           rolling_started_at?: string | null;
           ended_at?: string | null;

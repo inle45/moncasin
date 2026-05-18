@@ -1,6 +1,25 @@
 import { JACKPOT_COUNTDOWN_SECONDS } from "@/utils/jackpot/constants";
 import type { JackpotBetRow, JackpotRound } from "@/utils/jackpot/types";
 
+/** Parse ISO / timestamptz Postgres / epoch (s ou ms). Retourne null si invalide. */
+export function parseJackpotTimestamp(
+  value: string | null | undefined
+): number | null {
+  if (value == null || value === "") return null;
+
+  const trimmed = String(value).trim();
+  if (!trimmed) return null;
+
+  const asNumber = Number(trimmed);
+  if (Number.isFinite(asNumber) && asNumber > 0) {
+    const ms = asNumber < 1e12 ? asNumber * 1000 : asNumber;
+    return Number.isFinite(ms) ? ms : null;
+  }
+
+  const ms = new Date(trimmed).getTime();
+  return Number.isFinite(ms) ? ms : null;
+}
+
 /** Une entrée par joueur (somme des mises si doublons). */
 export function aggregateBetsByUser(bets: JackpotBetRow[]): JackpotBetRow[] {
   const map = new Map<string, JackpotBetRow>();
@@ -30,22 +49,42 @@ export function computeCountdownSeconds(
 ): number | null {
   if (!round || round.status !== "counting") return null;
 
+  const startMs = parseJackpotTimestamp(round.started_at);
+  if (startMs != null) {
+    const elapsed = Math.floor((Date.now() - startMs) / 1000);
+    return Math.max(0, JACKPOT_COUNTDOWN_SECONDS - elapsed);
+  }
   if (round.started_at) {
-    const startMs = new Date(round.started_at).getTime();
-    if (Number.isFinite(startMs)) {
-      const elapsed = Math.floor((Date.now() - startMs) / 1000);
-      return Math.max(0, JACKPOT_COUNTDOWN_SECONDS - elapsed);
-    }
+    console.warn("[Jackpot] started_at invalide (NaN) — valeur brute:", round.started_at);
   }
 
+  const endMs = parseJackpotTimestamp(round.counting_ends_at);
+  if (endMs != null) {
+    return Math.max(0, Math.ceil((endMs - Date.now()) / 1000));
+  }
   if (round.counting_ends_at) {
-    const endMs = new Date(round.counting_ends_at).getTime();
-    if (Number.isFinite(endMs)) {
-      return Math.max(0, Math.ceil((endMs - Date.now()) / 1000));
-    }
+    console.warn(
+      "[Jackpot] counting_ends_at invalide (NaN) — valeur brute:",
+      round.counting_ends_at
+    );
   }
 
-  return JACKPOT_COUNTDOWN_SECONDS;
+  const updatedMs = parseJackpotTimestamp(round.updated_at);
+  if (updatedMs != null) {
+    const elapsed = Math.floor((Date.now() - updatedMs) / 1000);
+    const left = JACKPOT_COUNTDOWN_SECONDS - elapsed;
+    console.warn(
+      "[Jackpot] Chrono via updated_at (started_at / counting_ends_at manquants ou invalides)",
+      { started_at: round.started_at, counting_ends_at: round.counting_ends_at, left }
+    );
+    return Math.max(0, left);
+  }
+
+  console.warn(
+    "[Jackpot] Aucune date valide pour le chrono — forçage 0s pour tenter trigger_jackpot_roll",
+    { id: round.id, started_at: round.started_at, counting_ends_at: round.counting_ends_at }
+  );
+  return 0;
 }
 
 export function isCountdownExpired(
