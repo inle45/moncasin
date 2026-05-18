@@ -1,4 +1,7 @@
-import { JACKPOT_COUNTDOWN_SECONDS } from "@/utils/jackpot/constants";
+import {
+  JACKPOT_COUNTDOWN_SECONDS,
+  JACKPOT_ROLLING_MS,
+} from "@/utils/jackpot/constants";
 import type { JackpotBetRow, JackpotRound } from "@/utils/jackpot/types";
 
 /** Parse ISO / timestamptz Postgres / epoch (s ou ms). Retourne null si invalide. */
@@ -85,6 +88,18 @@ export function computeCountdownSeconds(
     { id: round.id, started_at: round.started_at, counting_ends_at: round.counting_ends_at }
   );
   return 0;
+}
+
+/** Temps restant avant fin d'animation rolling (0 = prêt à clôturer). */
+export function getRollingAnimationRemainingMs(
+  round: JackpotRound | null
+): number | null {
+  if (!round || round.status !== "rolling") return null;
+
+  const startedMs = parseJackpotTimestamp(round.rolling_started_at);
+  if (startedMs == null) return JACKPOT_ROLLING_MS;
+
+  return Math.max(0, JACKPOT_ROLLING_MS - (Date.now() - startedMs));
 }
 
 export function isCountdownExpired(

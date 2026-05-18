@@ -304,6 +304,10 @@ export interface Database {
         Args: { p_round_id: string };
         Returns: Json;
       };
+      complete_jackpot_round: {
+        Args: { p_round_id: string };
+        Returns: Json;
+      };
     };
     Enums: Record<string, never>;
   };

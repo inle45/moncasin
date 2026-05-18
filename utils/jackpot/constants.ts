@@ -2,7 +2,11 @@ export const JACKPOT_CHANNEL = "jackpot:arena";
 /** Décompte affiché (aligné avec la fonction SQL enter_jackpot_arena). */
 export const JACKPOT_COUNTDOWN_SECONDS = 15;
 export const JACKPOT_ROLLING_MS = 4000;
+/** Durée animation JackpotRollStrip (légèrement < JACKPOT_ROLLING_MS). */
+export const JACKPOT_ROLL_STRIP_MS = 3800;
 export const JACKPOT_ENDED_DISPLAY_MS = 5000;
+/** Si toujours rolling après ce délai, force la clôture côté client. */
+export const JACKPOT_STUCK_ROLLING_MS = 10000;
 export const JACKPOT_STATE_POLL_MS = 800;
 /** Après « tirage imminent », resync si toujours bloqué en counting. */
 export const JACKPOT_STUCK_ROLL_MS = 5000;

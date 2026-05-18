@@ -1,8 +1,9 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { PlayerAvatar } from "@/components/profile";
 import { usePlayerAvatars } from "@/hooks/usePlayerAvatars";
+import { JACKPOT_ROLL_STRIP_MS } from "@/utils/jackpot/constants";
 import type { JackpotBetRow } from "@/utils/jackpot/types";
 import { cn } from "@/utils/cn";
 
@@ -10,14 +11,21 @@ interface JackpotRollStripProps {
   active: boolean;
   bets: JackpotBetRow[];
   winnerId: string | null;
+  onRollComplete?: () => void;
 }
 
 const STRIP_REPEAT = 12;
 
-export function JackpotRollStrip({ active, bets, winnerId }: JackpotRollStripProps) {
+export function JackpotRollStrip({
+  active,
+  bets,
+  winnerId,
+  onRollComplete,
+}: JackpotRollStripProps) {
   const profiles = usePlayerAvatars(bets.map((b) => b.user_id));
   const [offset, setOffset] = useState(0);
   const [landed, setLanded] = useState(false);
+  const rollCompleteFiredRef = useRef(false);
 
   const stripItems = useMemo(() => {
     if (!bets.length) return [];
@@ -45,15 +53,16 @@ export function JackpotRollStrip({ active, bets, winnerId }: JackpotRollStripPro
     if (!active || !stripItems.length) {
       setOffset(0);
       setLanded(false);
+      rollCompleteFiredRef.current = false;
       return;
     }
 
+    rollCompleteFiredRef.current = false;
     setLanded(false);
     const itemWidth = 72;
     const target = -(winnerIndex * itemWidth - 120);
-
     const start = performance.now();
-    const duration = 3800;
+    const duration = JACKPOT_ROLL_STRIP_MS;
 
     let frame = 0;
     const animate = (now: number) => {
@@ -64,12 +73,16 @@ export function JackpotRollStrip({ active, bets, winnerId }: JackpotRollStripPro
         frame = requestAnimationFrame(animate);
       } else {
         setLanded(true);
+        if (!rollCompleteFiredRef.current) {
+          rollCompleteFiredRef.current = true;
+          onRollComplete?.();
+        }
       }
     };
 
     frame = requestAnimationFrame(animate);
     return () => cancelAnimationFrame(frame);
-  }, [active, stripItems.length, winnerIndex]);
+  }, [active, stripItems.length, winnerIndex, onRollComplete]);
 
   if (!active || !stripItems.length) return null;
 

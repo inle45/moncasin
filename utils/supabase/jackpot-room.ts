@@ -66,6 +66,15 @@ function formatPostgrestError(err: PostgrestErrorShape): string {
 /** rolling en premier pour ne pas écraser l'animation par une autre manche en counting. */
 const ACTIVE_ROUND_STATUSES = ["rolling", "counting", "waiting"] as const;
 
+const RECENT_ENDED_MS = 12_000;
+
+export type CompleteJackpotRoundResult = {
+  ok: boolean;
+  round: JackpotRound | null;
+  error: string | null;
+  sqlMessage?: string;
+};
+
 /** Manche en cours (aligné sur jackpot_active_round_id : counting > rolling > waiting). */
 export async function fetchActiveJackpotRound(): Promise<
   RpcResult<JackpotRound>
@@ -105,6 +114,29 @@ export async function fetchActiveJackpotRound(): Promise<
 
     const round = parseJackpotRound(data);
     if (round) return { data: round, error: null };
+  }
+
+  const endedSince = new Date(Date.now() - RECENT_ENDED_MS).toISOString();
+  const { data: endedRes, timedOut: endedTimeout } = await safeQuery(
+    supabase
+      .from("jackpot_rounds")
+      .select("*")
+      .eq("status", "ended")
+      .gte("ended_at", endedSince)
+      .order("ended_at", { ascending: false })
+      .limit(1)
+      .maybeSingle()
+  );
+
+  if (!endedTimeout && endedRes) {
+    const { data: endedData, error: endedError } = endedRes as {
+      data: Record<string, unknown> | null;
+      error: PostgrestErrorShape | null;
+    };
+    if (!endedError && endedData) {
+      const endedRound = parseJackpotRound(endedData);
+      if (endedRound) return { data: endedRound, error: null };
+    }
   }
 
   const { data: fallbackRes, timedOut: fbTimeout } = await safeQuery(
@@ -400,6 +432,90 @@ export async function triggerJackpotRoll(
       debug: { step: "exception", postgrestMessage: msg },
     };
   }
+}
+
+function isMissingRpcError(err: PostgrestErrorShape): boolean {
+  return (
+    err.message.includes("Could not find") ||
+    err.message.includes("does not exist") ||
+    err.code === "PGRST202"
+  );
+}
+
+/**
+ * Clôture rolling → ended via `complete_jackpot_round(p_round_id)` ou `jackpot_advance_tick`.
+ */
+export async function completeJackpotRound(
+  roundId: string
+): Promise<CompleteJackpotRoundResult> {
+  const supabase = createClient();
+  if (!supabase) {
+    return { ok: false, round: null, error: "Supabase non configuré" };
+  }
+  if (!roundId) {
+    return { ok: false, round: null, error: "ID de manche manquant" };
+  }
+
+  const params = { p_round_id: roundId };
+  logJackpotRpc("complete_jackpot_round REQUEST", { params });
+
+  try {
+    const { data: wrapped, timedOut, error: timeoutErr } = await safeQuery(
+      supabase.rpc("complete_jackpot_round", params)
+    );
+
+    if (!timedOut && !timeoutErr && wrapped) {
+      const { data: rawData, error: rpcError } = wrapped as {
+        data: unknown;
+        error: PostgrestErrorShape | null;
+      };
+
+      if (rpcError && !isMissingRpcError(rpcError)) {
+        const msg = formatPostgrestError(rpcError);
+        return { ok: false, round: null, error: msg, sqlMessage: msg };
+      }
+
+      if (!rpcError && rawData != null) {
+        const parsed = parseJackpotRpcPayload(rawData);
+        if (parsed.ok && parsed.round) {
+          return { ok: true, round: parsed.round, error: null };
+        }
+        if (!parsed.ok) {
+          const sqlMessage = parsed.error ?? "Clôture refusée";
+          return { ok: false, round: null, error: sqlMessage, sqlMessage };
+        }
+      }
+    }
+  } catch (err) {
+    logJackpotRpc("complete_jackpot_round exception", { err });
+  }
+
+  logJackpotRpc("complete_jackpot_round fallback advanceJackpotTick", { roundId });
+  const tick = await advanceJackpotTick();
+  if (tick.error && !tick.skipped) {
+    return { ok: false, round: tick.data, error: tick.error };
+  }
+  if (tick.data) {
+    return { ok: true, round: tick.data, error: null };
+  }
+
+  return {
+    ok: false,
+    round: null,
+    error: "Impossible de clôturer la manche (advance_tick vide)",
+  };
+}
+
+/** ended → waiting (nouvelle manche) via `jackpot_advance_tick`. */
+export async function finalizeJackpotRound(): Promise<CompleteJackpotRoundResult> {
+  const tick = await advanceJackpotTick();
+  if (tick.error && !tick.skipped) {
+    return { ok: false, round: tick.data, error: tick.error };
+  }
+  if (tick.data) {
+    return { ok: true, round: tick.data, error: null };
+  }
+  return { ok: false, round: null, error: "finalize: advance_tick vide" };
 }
 
 /**

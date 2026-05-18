@@ -39,6 +39,7 @@ export default function JackpotPage() {
     winnerPayout,
     uniquePlayerCount,
     isDemoMode,
+    completeRoundAfterRoll,
   } = useJackpotArena();
 
   const winnerProfiles = usePlayerAvatars(
@@ -119,6 +120,7 @@ export default function JackpotPage() {
           active={roundStatus === "rolling"}
           bets={bets}
           winnerId={round?.winner_id ?? null}
+          onRollComplete={() => void completeRoundAfterRoll()}
         />
 
         {myBet && (

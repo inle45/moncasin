@@ -5,14 +5,17 @@ import { runJackpotLoopTick } from "@/utils/jackpot/advance-client";
 import {
   aggregateBetsByUser,
   computeCountdownSeconds,
+  getRollingAnimationRemainingMs,
   isCountdownExpired,
 } from "@/utils/jackpot/bets";
 import {
   JACKPOT_ENDED_DISPLAY_MS,
   JACKPOT_LOOP_TICK_MS,
   JACKPOT_MIN_BET,
+  JACKPOT_ROLLING_MS,
   JACKPOT_STATE_POLL_MS,
   JACKPOT_STUCK_ROLL_MS,
+  JACKPOT_STUCK_ROLLING_MS,
 } from "@/utils/jackpot/constants";
 import { parseJackpotBet, parseJackpotRound } from "@/utils/jackpot/parse";
 import { buildPotSegments } from "@/utils/jackpot/segments";
@@ -22,9 +25,11 @@ import { createClient } from "@/utils/supabase/client";
 import { isDemoMode, isSupabaseConfigured } from "@/utils/supabase/config";
 import {
   JACKPOT_CHANNEL,
+  completeJackpotRound,
   enterJackpotArena,
   fetchActiveJackpotRound,
   fetchJackpotBets,
+  finalizeJackpotRound,
   triggerJackpotRoll,
 } from "@/utils/supabase/jackpot-room";
 import { fetchProfile } from "@/utils/supabase/profiles";
@@ -97,6 +102,9 @@ export function useJackpotArena() {
   const triggeringRollRef = useRef(false);
   const stuckRollSinceRef = useRef<number | null>(null);
   const lastTriggerErrorRef = useRef<string | null>(null);
+  const completingRoundRef = useRef(false);
+  const finalizeScheduledRef = useRef<string | null>(null);
+  const rollingWatchdogSinceRef = useRef<number | null>(null);
 
   const [round, setRound] = useState<JackpotRound | null>(null);
   const [bets, setBets] = useState<JackpotBetRow[]>([]);
@@ -142,6 +150,15 @@ export function useJackpotArena() {
       setCriticalError(null);
     }
 
+    if (next.status === "waiting" && prevRoundId && prevRoundId !== next.id) {
+      setBets([]);
+      betsRef.current = [];
+      setHasPlacedBet(false);
+      hasPlacedBetRef.current = false;
+      rollTriggeredForRoundRef.current = null;
+      finalizeScheduledRef.current = null;
+    }
+
     if (next.status === "rolling" || next.status === "ended") {
       rollTriggeredForRoundRef.current = next.id;
       triggeringRollRef.current = false;
@@ -149,6 +166,7 @@ export function useJackpotArena() {
       setCountdownSeconds(null);
       stuckRollSinceRef.current = null;
       lastTriggerErrorRef.current = null;
+      rollingWatchdogSinceRef.current = null;
     }
 
     if (next.status === "ended" && prevStatus !== "ended") {
@@ -277,6 +295,13 @@ export function useJackpotArena() {
             triggeringRollRef.current = false;
           }
 
+          if (parsed.status === "ended") {
+            void reloadBets(parsed.id);
+            if (parsed.winner_id === userIdRef.current) {
+              void syncBalance();
+            }
+          }
+
           if (payload.eventType !== "DELETE") {
             void reloadBets(parsed.id);
           }
@@ -323,7 +348,8 @@ export function useJackpotArena() {
     if (!isSupabaseConfigured() || isDemoMode()) return;
 
     const pollId = setInterval(() => {
-      if (roundRef.current?.status === "rolling") return;
+      const status = roundRef.current?.status;
+      if (status === "rolling" || status === "ended") return;
       void refreshState();
     }, JACKPOT_STATE_POLL_MS);
 
@@ -380,8 +406,128 @@ export function useJackpotArena() {
     round?.counting_ends_at,
   ]);
 
+  const resetArenaForNewRound = useCallback(() => {
+    setBets([]);
+    betsRef.current = [];
+    setHasPlacedBet(false);
+    hasPlacedBetRef.current = false;
+    rollTriggeredForRoundRef.current = null;
+    finalizeScheduledRef.current = null;
+    completingRoundRef.current = false;
+  }, []);
+
+  const scheduleFinalizeNewRound = useCallback(
+    (endedRoundId: string) => {
+      if (finalizeScheduledRef.current === endedRoundId) return;
+      finalizeScheduledRef.current = endedRoundId;
+
+      window.setTimeout(() => {
+        void (async () => {
+          const fin = await finalizeJackpotRound();
+          if (fin.round) {
+            applyRound(fin.round);
+            if (fin.round.status === "waiting") {
+              resetArenaForNewRound();
+              await reloadBets(fin.round.id);
+            }
+          } else {
+            await refreshState();
+          }
+          finalizeScheduledRef.current = null;
+        })();
+      }, JACKPOT_ENDED_DISPLAY_MS);
+    },
+    [applyRound, refreshState, reloadBets, resetArenaForNewRound]
+  );
+
+  const completeRoundAfterRoll = useCallback(async () => {
+    const r = roundRef.current;
+    if (!r || r.status !== "rolling" || completingRoundRef.current) return;
+
+    completingRoundRef.current = true;
+    try {
+      const result = await completeJackpotRound(r.id);
+
+      if (!result.ok) {
+        const errMsg = result.sqlMessage ?? result.error ?? "Clôture impossible";
+        lastTriggerErrorRef.current = errMsg;
+        setCriticalError(errMsg);
+        console.error("ERREUR CRITIQUE JACKPOT (complete):", result);
+        return;
+      }
+
+      if (result.round) {
+        applyRound(result.round);
+
+        if (result.round.status === "ended") {
+          await reloadBets(result.round.id);
+          if (result.round.winner_id === userIdRef.current) {
+            await syncBalance();
+          }
+          scheduleFinalizeNewRound(result.round.id);
+        } else if (result.round.status === "waiting") {
+          resetArenaForNewRound();
+          await reloadBets(result.round.id);
+        } else {
+          await refreshState();
+        }
+      }
+    } finally {
+      completingRoundRef.current = false;
+    }
+  }, [
+    applyRound,
+    reloadBets,
+    refreshState,
+    scheduleFinalizeNewRound,
+    resetArenaForNewRound,
+    syncBalance,
+  ]);
+
   const roundStatus = round?.status ?? "waiting";
   const countdownExpired = isCountdownExpired(round, countdownSeconds);
+
+  /** Après écran vainqueur : ended → waiting (nouvelle manche). */
+  useEffect(() => {
+    if (roundStatus !== "ended" || !round?.id) return;
+    scheduleFinalizeNewRound(round.id);
+  }, [roundStatus, round?.id, scheduleFinalizeNewRound]);
+
+  /** Clôture rolling → ended après l'animation (callback strip + timer serveur). */
+  useEffect(() => {
+    if (roundStatus !== "rolling" || !round?.id) return;
+
+    if (!rollingWatchdogSinceRef.current) {
+      rollingWatchdogSinceRef.current = Date.now();
+    }
+
+    const remaining = getRollingAnimationRemainingMs(round);
+    const delay =
+      remaining != null
+        ? Math.max(200, remaining + 150)
+        : JACKPOT_ROLLING_MS;
+
+    const animationTimer = window.setTimeout(() => {
+      void completeRoundAfterRoll();
+    }, delay);
+
+    const watchdogTimer = window.setTimeout(() => {
+      if (roundRef.current?.status === "rolling") {
+        void completeRoundAfterRoll();
+      }
+    }, JACKPOT_STUCK_ROLLING_MS);
+
+    return () => {
+      window.clearTimeout(animationTimer);
+      window.clearTimeout(watchdogTimer);
+    };
+  }, [roundStatus, round?.id, round?.rolling_started_at, completeRoundAfterRoll]);
+
+  useEffect(() => {
+    if (roundStatus !== "rolling" && roundStatus !== "ended") {
+      rollingWatchdogSinceRef.current = null;
+    }
+  }, [roundStatus]);
 
   useEffect(() => {
     if (roundStatus === "counting" && countdownExpired) {
@@ -669,6 +815,7 @@ export function useJackpotArena() {
     isPlacing: isSubmitting,
     enterArena,
     placeBet: enterArena,
+    completeRoundAfterRoll,
     message,
     criticalError,
     connected,

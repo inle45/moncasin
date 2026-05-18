@@ -34,3 +34,7 @@
 --   rolling : status, winner_id (recommandé), winning_ticket (optionnel), rolling_started_at
 --   ended   : + winner_payout, ended_at, tax_pool
 -- Le front ne valide PAS ended immédiatement : jackpot_advance_tick ou SQL gère rolling → ended ~4s après.
+--
+-- Clôture côté client (après animation ~4s) :
+--   complete_jackpot_round(p_round_id) si présente, sinon jackpot_advance_tick()
+-- Puis 5s plus tard : jackpot_advance_tick() pour ended → waiting (nouvelle manche).
