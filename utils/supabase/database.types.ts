@@ -16,6 +16,8 @@ export interface Database {
           balance: number;
           xp: number;
           vip_status: string;
+          avatar_url: string | null;
+          profile_frame: string | null;
           created_at: string;
           updated_at: string;
         };
@@ -25,6 +27,8 @@ export interface Database {
           balance?: number;
           xp?: number;
           vip_status?: string;
+          avatar_url?: string | null;
+          profile_frame?: string | null;
           created_at?: string;
           updated_at?: string;
         };
@@ -34,6 +38,8 @@ export interface Database {
           balance?: number;
           xp?: number;
           vip_status?: string;
+          avatar_url?: string | null;
+          profile_frame?: string | null;
           created_at?: string;
           updated_at?: string;
         };

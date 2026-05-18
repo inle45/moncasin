@@ -6,22 +6,58 @@ import { createClient, DEMO_MODE } from "@/utils/supabase/client";
 import { isDemoMode } from "@/utils/supabase/config";
 import { fetchProfile } from "@/utils/supabase/profiles";
 
+export interface AuthProfileSnapshot {
+  username: string | null;
+  avatarUrl: string | null;
+  vipStatus: string;
+  profileFrame: string | null;
+}
+
 export function useAuth() {
   const demo = DEMO_MODE;
 
   const [user, setUser] = useState<User | null>(null);
-  const [username, setUsername] = useState<string | null>(null);
+  const [profile, setProfile] = useState<AuthProfileSnapshot | null>(null);
   const [loading, setLoading] = useState(!demo);
 
-  const loadUserProfile = useCallback(async (userId: string) => {
-    const { profile } = await fetchProfile(userId);
-    setUsername(profile?.username ?? null);
-  }, []);
+  const applyProfileRow = useCallback(
+    (row: {
+      username: string | null;
+      avatar_url?: string | null;
+      vip_status?: string;
+      profile_frame?: string | null;
+    } | null) => {
+      if (!row) {
+        setProfile(null);
+        return;
+      }
+      setProfile({
+        username: row.username ?? null,
+        avatarUrl: row.avatar_url ?? null,
+        vipStatus: row.vip_status ?? "Joueur",
+        profileFrame: row.profile_frame ?? null,
+      });
+    },
+    []
+  );
+
+  const loadUserProfile = useCallback(
+    async (userId: string) => {
+      const { profile: row } = await fetchProfile(userId);
+      applyProfileRow(row);
+    },
+    [applyProfileRow]
+  );
+
+  const refreshProfile = useCallback(async () => {
+    if (!user?.id) return;
+    await loadUserProfile(user.id);
+  }, [user?.id, loadUserProfile]);
 
   useEffect(() => {
     if (demo) {
       setUser(null);
-      setUsername(null);
+      setProfile(null);
       setLoading(false);
       return;
     }
@@ -46,7 +82,7 @@ export function useAuth() {
       if (currentUser) {
         await loadUserProfile(currentUser.id);
       } else {
-        setUsername(null);
+        setProfile(null);
       }
       setLoading(false);
     })();
@@ -62,7 +98,7 @@ export function useAuth() {
       if (nextUser) {
         await loadUserProfile(nextUser.id);
       } else if (event === "SIGNED_OUT") {
-        setUsername(null);
+        setProfile(null);
       }
       setLoading(false);
     });
@@ -79,19 +115,23 @@ export function useAuth() {
       await supabase.auth.signOut();
     }
     setUser(null);
-    setUsername(null);
+    setProfile(null);
   }, []);
 
   return {
     user,
-    username,
+    username: profile?.username ?? null,
+    avatarUrl: profile?.avatarUrl ?? null,
+    vipStatus: profile?.vipStatus ?? "Joueur",
+    profileFrame: profile?.profileFrame ?? null,
+    profile,
     loading,
     isAuthenticated: !!user,
     isConfigured: !demo,
     isDemoMode: demo,
     signOut,
+    refreshProfile,
   };
 }
 
-// Réexport pour les composants qui importent depuis config
 export { isDemoMode };

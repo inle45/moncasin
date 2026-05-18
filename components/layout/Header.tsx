@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
+import { PlayerAvatar } from "@/components/profile";
 import { cn } from "@/utils/cn";
 import { useAuth } from "@/hooks/useAuth";
 
@@ -11,7 +12,15 @@ interface HeaderProps {
 
 export function Header({ className }: HeaderProps) {
   const router = useRouter();
-  const { isAuthenticated, username, loading, signOut } = useAuth();
+  const {
+    isAuthenticated,
+    username,
+    avatarUrl,
+    vipStatus,
+    profileFrame,
+    loading,
+    signOut,
+  } = useAuth();
 
   const handleSignOut = async () => {
     await signOut();
@@ -41,15 +50,25 @@ export function Header({ className }: HeaderProps) {
           <div className="h-9 w-24 animate-pulse rounded-xl bg-white/5" />
         ) : isAuthenticated ? (
           <div className="flex shrink-0 items-center gap-2">
-            <div
+            <Link
+              href="/profil"
               className={cn(
-                "max-w-[5rem] truncate rounded-xl border border-casino-gold/30 sm:max-w-[7rem]",
-                "bg-casino-gold/10 px-2.5 py-2 text-[10px] font-semibold text-casino-gold-neon sm:px-3 sm:text-xs"
+                "flex max-w-[8.5rem] items-center gap-2 rounded-xl border border-casino-gold/30 sm:max-w-[10rem]",
+                "bg-casino-gold/10 px-2 py-1.5 transition hover:border-casino-purple-neon/40 sm:px-2.5"
               )}
-              title={username ?? "Joueur"}
+              title="Mon profil"
             >
-              {username ?? "Joueur"}
-            </div>
+              <PlayerAvatar
+                username={username}
+                avatarUrl={avatarUrl}
+                vipStatus={vipStatus}
+                profileFrame={profileFrame}
+                size="sm"
+              />
+              <span className="truncate text-[10px] font-semibold text-casino-gold-neon sm:text-xs">
+                {username ?? "Joueur"}
+              </span>
+            </Link>
             <button
               type="button"
               onClick={handleSignOut}

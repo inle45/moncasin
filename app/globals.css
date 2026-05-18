@@ -32,4 +32,27 @@
   .text-gradient-gold {
     @apply bg-gradient-to-r from-casino-gold-neon via-casino-gold to-casino-gold-dim bg-clip-text text-transparent;
   }
+
+  .avatar-vip-ring {
+    animation: avatar-vip-glow 2.4s ease-in-out infinite;
+    box-shadow:
+      0 0 12px rgba(168, 85, 247, 0.55),
+      0 0 28px rgba(192, 132, 252, 0.35);
+  }
+}
+
+@keyframes avatar-vip-glow {
+  0%,
+  100% {
+    box-shadow:
+      0 0 10px rgba(168, 85, 247, 0.45),
+      0 0 22px rgba(124, 58, 237, 0.25);
+    filter: brightness(1);
+  }
+  50% {
+    box-shadow:
+      0 0 18px rgba(217, 70, 239, 0.75),
+      0 0 36px rgba(168, 85, 247, 0.55);
+    filter: brightness(1.12);
+  }
 }

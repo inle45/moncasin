@@ -1,5 +1,8 @@
 "use client";
 
+import { useMemo } from "react";
+import { PlayerIdentity } from "@/components/profile";
+import { usePlayerAvatars } from "@/hooks/usePlayerAvatars";
 import { formatMultiplier } from "@/utils/crash/engine";
 import type { CrashBetRow, CrashPhase } from "@/utils/crash/types";
 import { cn } from "@/utils/cn";
@@ -18,6 +21,8 @@ export function CrashPlayersList({
   connected,
 }: CrashPlayersListProps) {
   const cashed = bets.filter((b) => b.status === "cashed_out").length;
+  const userIds = useMemo(() => bets.map((b) => b.user_id), [bets]);
+  const profilesByUserId = usePlayerAvatars(userIds);
 
   return (
     <div className="mx-4 rounded-xl border border-white/10 bg-zinc-900/60 p-3 backdrop-blur-xl">
@@ -49,34 +54,43 @@ export function CrashPlayersList({
             En attente des mises…
           </li>
         )}
-        {bets.map((b) => (
-          <li
-            key={b.id}
-            className={cn(
-              "flex items-center justify-between rounded-lg px-2 py-1.5 text-xs",
-              b.status === "cashed_out" && "bg-emerald-500/10",
-              b.status === "lost" && "bg-red-500/10",
-              b.status === "active" && "bg-white/5"
-            )}
-          >
-            <span className="truncate font-medium text-white/85">
-              {b.username}
-            </span>
-            <span className="shrink-0 tabular-nums">
-              {b.status === "cashed_out" && b.cashout_multiplier ? (
-                <span className="font-bold text-emerald-300">
-                  {formatMultiplier(Number(b.cashout_multiplier))}
-                </span>
-              ) : b.status === "lost" ? (
-                <span className="text-red-300">Perdu</span>
-              ) : (
-                <span className="text-casino-gold-neon">
-                  {b.bet_amount.toLocaleString("fr-FR")} 🪙
-                </span>
+        {bets.map((b) => {
+          const profile = profilesByUserId[b.user_id];
+          return (
+            <li
+              key={b.id}
+              className={cn(
+                "flex items-center justify-between gap-2 rounded-lg px-2 py-1.5 text-xs",
+                b.status === "cashed_out" && "bg-emerald-500/10",
+                b.status === "lost" && "bg-red-500/10",
+                b.status === "active" && "bg-white/5"
               )}
-            </span>
-          </li>
-        ))}
+            >
+              <PlayerIdentity
+                username={b.username}
+                avatarUrl={profile?.avatar_url}
+                vipStatus={profile?.vip_status}
+                profileFrame={profile?.profile_frame}
+                size="xs"
+                className="min-w-0 flex-1"
+                nameClassName="text-xs"
+              />
+              <span className="shrink-0 tabular-nums">
+                {b.status === "cashed_out" && b.cashout_multiplier ? (
+                  <span className="font-bold text-emerald-300">
+                    {formatMultiplier(Number(b.cashout_multiplier))}
+                  </span>
+                ) : b.status === "lost" ? (
+                  <span className="text-red-300">Perdu</span>
+                ) : (
+                  <span className="text-casino-gold-neon">
+                    {b.bet_amount.toLocaleString("fr-FR")} 🪙
+                  </span>
+                )}
+              </span>
+            </li>
+          );
+        })}
       </ul>
     </div>
   );
