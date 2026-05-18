@@ -37,9 +37,19 @@ export function JackpotStatusBanner({
       <p className="text-[10px] font-bold uppercase tracking-[0.25em] text-white/50">
         {LABELS[status]}
       </p>
-      {status === "counting" && countdownSeconds != null && (
+      {status === "counting" && countdownSeconds != null && countdownSeconds > 0 && (
         <p className="mt-1 font-display text-4xl font-black tabular-nums text-cyan-300">
           {countdownSeconds}s
+        </p>
+      )}
+      {status === "counting" && countdownSeconds != null && countdownSeconds <= 0 && (
+        <p className="mt-1 text-sm font-semibold text-amber-200/90">
+          Mises closes — tirage imminent…
+        </p>
+      )}
+      {status === "counting" && (
+        <p className="mt-1 text-xs text-white/45">
+          {playerCount} gladiateur{playerCount > 1 ? "s" : ""} dans l&apos;arène
         </p>
       )}
       {status === "waiting" && (

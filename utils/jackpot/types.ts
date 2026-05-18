@@ -9,6 +9,8 @@ export interface JackpotRound {
   winner_id: string | null;
   winner_payout: number | null;
   winning_ticket: number | null;
+  /** Début du compte à rebours (source de vérité SQL). */
+  started_at: string | null;
   counting_ends_at: string | null;
   rolling_started_at: string | null;
   ended_at: string | null;

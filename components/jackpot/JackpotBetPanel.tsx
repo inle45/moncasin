@@ -12,7 +12,7 @@ interface JackpotBetPanelProps {
   hasBet: boolean;
   roundStatus: JackpotRoundStatus;
   balance: number;
-  isPlacing: boolean;
+  isSubmitting: boolean;
   isDemoMode: boolean;
 }
 
@@ -24,12 +24,12 @@ export function JackpotBetPanel({
   hasBet,
   roundStatus,
   balance,
-  isPlacing,
+  isSubmitting,
   isDemoMode,
 }: JackpotBetPanelProps) {
   const arenaClosed =
     roundStatus === "rolling" || roundStatus === "ended";
-  const inputLocked = hasBet || arenaClosed || isPlacing;
+  const inputLocked = hasBet || arenaClosed || isSubmitting;
 
   return (
     <div className="rounded-2xl border border-casino-purple-neon/30 bg-zinc-950/90 p-4 shadow-neon-purple backdrop-blur-xl">
@@ -81,7 +81,7 @@ export function JackpotBetPanel({
           !canBet && "cursor-not-allowed opacity-45"
         )}
       >
-        {isPlacing
+        {isSubmitting
           ? "Entrée en cours…"
           : hasBet
             ? "Mise verrouillée"

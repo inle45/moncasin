@@ -39,7 +39,9 @@ export function JackpotPotBar({
       <div className="relative h-14 overflow-hidden rounded-2xl border border-white/10 bg-zinc-950/80 shadow-neon-purple">
         {segments.length === 0 ? (
           <div className="flex h-full items-center justify-center text-xs text-white/30">
-            En attente des guerriers…
+            {totalPot > 0
+              ? "Chargement des gladiateurs…"
+              : "En attente des guerriers…"}
           </div>
         ) : (
           <div className="flex h-full w-full">

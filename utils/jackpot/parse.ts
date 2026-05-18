@@ -44,6 +44,7 @@ export function parseJackpotRound(row: Record<string, unknown>): JackpotRound | 
         : null,
     winning_ticket:
       row.winning_ticket != null ? Number(row.winning_ticket) : null,
+    started_at: pickString(row, "started_at", "counting_started_at"),
     counting_ends_at: pickString(
       row,
       "counting_ends_at",

@@ -28,7 +28,7 @@ export default function JackpotPage() {
     winnerBet,
     canBet,
     roundStatus,
-    isPlacing,
+    isSubmitting,
     placeBet,
     message,
     connected,
@@ -36,10 +36,10 @@ export default function JackpotPage() {
     countdownSeconds,
     showWinnerFlash,
     winnerPayout,
+    uniquePlayerCount,
     isDemoMode,
   } = useJackpotArena();
 
-  const status = round?.status ?? "waiting";
   const winnerProfiles = usePlayerAvatars(
     round?.winner_id ? [round.winner_id] : []
   );
@@ -97,15 +97,15 @@ export default function JackpotPage() {
         )}
 
         <JackpotStatusBanner
-          status={status}
+          status={roundStatus}
           countdownSeconds={countdownSeconds}
-          playerCount={bets.length}
+          playerCount={uniquePlayerCount}
         />
 
         <JackpotPotBar totalPot={round?.total_pot ?? 0} segments={segments} />
 
         <JackpotRollStrip
-          active={status === "rolling"}
+          active={roundStatus === "rolling"}
           bets={bets}
           winnerId={round?.winner_id ?? null}
         />
@@ -130,7 +130,7 @@ export default function JackpotPage() {
           hasBet={!!myBet}
           roundStatus={roundStatus}
           balance={balance}
-          isPlacing={isPlacing}
+          isSubmitting={isSubmitting}
           isDemoMode={isDemoMode}
         />
 
@@ -144,7 +144,7 @@ export default function JackpotPage() {
       </main>
 
       <JackpotWinnerOverlay
-        active={showWinnerFlash && status === "ended"}
+        active={showWinnerFlash && roundStatus === "ended"}
         username={winnerBet?.username ?? winnerProfile?.username ?? "Joueur"}
         payout={winnerPayout}
         avatarUrl={winnerProfile?.avatar_url}
