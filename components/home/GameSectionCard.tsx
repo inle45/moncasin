@@ -7,6 +7,7 @@ import type { ReactNode } from "react";
 export type GameSectionId =
   | "slot"
   | "crash"
+  | "jackpot"
   | "leaderboard"
   | "vip-shop"
   | "daily-wheel";

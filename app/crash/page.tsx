@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import { Header } from "@/components/layout/Header";
 import {
   CrashCanvas,
   CrashDualControls,
@@ -43,7 +44,10 @@ export default function CrashPage() {
         "bg-[radial-gradient(ellipse_at_top,rgba(124,58,237,0.22),transparent_55%),#0B0813]"
       )}
     >
-      <CrashHeader balance={balance} isLoading={false} />
+      <Header />
+      <div className="px-4">
+        <CrashHeader balance={balance} isLoading={false} />
+      </div>
 
       {message && (
         <p

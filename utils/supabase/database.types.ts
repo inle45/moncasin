@@ -159,6 +159,105 @@ export interface Database {
         };
         Relationships: [];
       };
+      jackpot_meta: {
+        Row: {
+          id: number;
+          tax_pool: number;
+          updated_at: string;
+        };
+        Insert: {
+          id?: number;
+          tax_pool?: number;
+          updated_at?: string;
+        };
+        Update: {
+          id?: number;
+          tax_pool?: number;
+          updated_at?: string;
+        };
+        Relationships: [];
+      };
+      jackpot_rounds: {
+        Row: {
+          id: string;
+          round_number: number;
+          status: string;
+          total_pot: number;
+          tax_pool: number;
+          winner_id: string | null;
+          winner_payout: number | null;
+          winning_ticket: number | null;
+          counting_ends_at: string | null;
+          rolling_started_at: string | null;
+          ended_at: string | null;
+          created_at: string;
+          updated_at: string;
+        };
+        Insert: {
+          id?: string;
+          round_number?: number;
+          status?: string;
+          total_pot?: number;
+          tax_pool?: number;
+          winner_id?: string | null;
+          winner_payout?: number | null;
+          winning_ticket?: number | null;
+          counting_ends_at?: string | null;
+          rolling_started_at?: string | null;
+          ended_at?: string | null;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Update: {
+          id?: string;
+          round_number?: number;
+          status?: string;
+          total_pot?: number;
+          tax_pool?: number;
+          winner_id?: string | null;
+          winner_payout?: number | null;
+          winning_ticket?: number | null;
+          counting_ends_at?: string | null;
+          rolling_started_at?: string | null;
+          ended_at?: string | null;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Relationships: [];
+      };
+      jackpot_bets: {
+        Row: {
+          id: string;
+          round_id: string;
+          user_id: string;
+          username: string;
+          bet_amount: number;
+          ticket_start: number;
+          ticket_end: number;
+          created_at: string;
+        };
+        Insert: {
+          id?: string;
+          round_id: string;
+          user_id: string;
+          username?: string;
+          bet_amount: number;
+          ticket_start: number;
+          ticket_end: number;
+          created_at?: string;
+        };
+        Update: {
+          id?: string;
+          round_id?: string;
+          user_id?: string;
+          username?: string;
+          bet_amount?: number;
+          ticket_start?: number;
+          ticket_end?: number;
+          created_at?: string;
+        };
+        Relationships: [];
+      };
     };
     Views: Record<string, never>;
     Functions: {
@@ -184,6 +283,14 @@ export interface Database {
       };
       crash_cashout: {
         Args: { p_multiplier: number };
+        Returns: Json;
+      };
+      jackpot_place_bet: {
+        Args: { p_amount: number };
+        Returns: Json;
+      };
+      jackpot_advance_tick: {
+        Args: Record<string, never>;
         Returns: Json;
       };
     };

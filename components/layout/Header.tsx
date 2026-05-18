@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
+import { AppNav } from "@/components/layout/AppNav";
 import { PlayerAvatar } from "@/components/profile";
 import { cn } from "@/utils/cn";
 import { useAuth } from "@/hooks/useAuth";
@@ -96,6 +97,9 @@ export function Header({ className }: HeaderProps) {
             Connexion
           </Link>
         )}
+      </div>
+      <div className="mx-auto max-w-lg px-4 pb-3 sm:max-w-2xl">
+        <AppNav />
       </div>
     </header>
   );

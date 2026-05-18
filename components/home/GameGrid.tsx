@@ -1,6 +1,7 @@
 import { GameSectionCard } from "./GameSectionCard";
 import {
   CrashIcon,
+  JackpotIcon,
   SlotIcon,
   LeaderboardIcon,
   VipShopIcon,
@@ -24,6 +25,15 @@ const SECTIONS = [
     href: "/crash",
     accent: "gold" as const,
     icon: CrashIcon,
+    badge: "Live",
+  },
+  {
+    id: "jackpot" as const,
+    title: "Arène Jackpot",
+    subtitle: "PvP · Pot commun · Tirage live",
+    href: "/jackpot",
+    accent: "purple" as const,
+    icon: JackpotIcon,
     badge: "Nouveau",
   },
   {
