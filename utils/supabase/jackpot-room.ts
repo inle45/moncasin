@@ -15,6 +15,14 @@ export const PROFILE_BALANCE_COLUMN = "balance" as const;
 
 type RpcResult<T> = { data: T | null; error: string | null };
 
+export type TriggerJackpotRollResult = {
+  ok: boolean;
+  balance?: number;
+  round?: JackpotRound;
+  error: string | null;
+  debug?: EnterJackpotArenaResult["debug"];
+};
+
 export type EnterJackpotArenaResult = {
   ok: boolean;
   balance?: number;
@@ -162,6 +170,107 @@ export async function advanceJackpotTick(): Promise<
     error: null,
     serverNowMs: parsed.serverNowMs,
   };
+}
+
+/**
+ * Lance le tirage quand le décompte est terminé (`trigger_jackpot_roll()`).
+ * Réponse attendue : `{ ok, round, balance? }`.
+ */
+export async function triggerJackpotRoll(): Promise<TriggerJackpotRollResult> {
+  const supabase = createClient();
+  if (!supabase) {
+    return { ok: false, error: "Supabase non configuré" };
+  }
+
+  const {
+    data: { user },
+    error: authError,
+  } = await supabase.auth.getUser();
+
+  if (authError || !user) {
+    const msg = authError?.message ?? "Session expirée — reconnecte-toi";
+    logJackpotRpc("trigger_jackpot_roll AUTH", { authError });
+    return { ok: false, error: msg, debug: { step: "auth", postgrestMessage: msg } };
+  }
+
+  logJackpotRpc("trigger_jackpot_roll REQUEST", { sessionUserId: user.id });
+
+  try {
+    const { data: wrapped, timedOut, error: timeoutErr } = await safeQuery(
+      supabase.rpc("trigger_jackpot_roll")
+    );
+
+    if (timedOut || timeoutErr) {
+      const msg = timedOut
+        ? "Connexion expirée (RPC trigger_jackpot_roll)"
+        : String(timeoutErr);
+      return {
+        ok: false,
+        error: msg,
+        debug: { step: "timeout", postgrestMessage: msg },
+      };
+    }
+
+    if (!wrapped) {
+      return {
+        ok: false,
+        error: "Réponse RPC vide",
+        debug: { step: "empty_wrap" },
+      };
+    }
+
+    const { data: rawData, error: rpcError } = wrapped as {
+      data: unknown;
+      error: PostgrestErrorShape | null;
+    };
+
+    logJackpotRpc("trigger_jackpot_roll RAW RESPONSE", { rawData, rpcError });
+
+    if (rpcError) {
+      const msg = formatPostgrestError(rpcError);
+      return {
+        ok: false,
+        error: msg,
+        debug: {
+          step: "postgrest_error",
+          postgrestCode: rpcError.code,
+          postgrestMessage: rpcError.message,
+          postgrestDetails: rpcError.details,
+          postgrestHint: rpcError.hint,
+          rawData,
+        },
+      };
+    }
+
+    const parsed = parseJackpotRpcPayload(rawData);
+
+    if (!parsed.ok) {
+      return {
+        ok: false,
+        error: parsed.error ?? "Tirage refusé par le serveur",
+        debug: {
+          step: "rpc_ok_false",
+          rawData,
+          postgrestMessage: parsed.error ?? undefined,
+        },
+      };
+    }
+
+    return {
+      ok: true,
+      balance: parsed.balance ?? undefined,
+      round: parsed.round ?? undefined,
+      error: null,
+      debug: { step: "success", rawData },
+    };
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    return {
+      ok: false,
+      error: `Exception RPC: ${msg}`,
+      debug: { step: "exception", postgrestMessage: msg },
+    };
+  }
 }
 
 /**

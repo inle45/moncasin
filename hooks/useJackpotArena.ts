@@ -24,6 +24,7 @@ import {
   enterJackpotArena,
   fetchActiveJackpotRound,
   fetchJackpotBets,
+  triggerJackpotRoll,
 } from "@/utils/supabase/jackpot-room";
 import { fetchProfile } from "@/utils/supabase/profiles";
 
@@ -49,6 +50,8 @@ export function useJackpotArena() {
   const advancingRef = useRef(false);
   const submittingRef = useRef(false);
   const hasPlacedBetRef = useRef(false);
+  const rollTriggeredForRoundRef = useRef<string | null>(null);
+  const triggeringRollRef = useRef(false);
 
   const [round, setRound] = useState<JackpotRound | null>(null);
   const [bets, setBets] = useState<JackpotBetRow[]>([]);
@@ -85,6 +88,11 @@ export function useJackpotArena() {
       setBets([]);
       setHasPlacedBet(false);
       hasPlacedBetRef.current = false;
+      rollTriggeredForRoundRef.current = null;
+    }
+
+    if (next.status === "rolling" || next.status === "ended") {
+      rollTriggeredForRoundRef.current = next.id;
     }
 
     if (next.status === "ended" && prevStatus !== "ended") {
@@ -273,6 +281,58 @@ export function useJackpotArena() {
     round?.status,
     round?.started_at,
     round?.counting_ends_at,
+  ]);
+
+  /** À 0 s : déclenche le tirage côté serveur (une fois par manche). */
+  useEffect(() => {
+    if (!isSupabaseConfigured() || isDemoMode()) return;
+
+    const current = roundRef.current;
+    if (!current || current.status !== "counting") return;
+    if (countdownSeconds == null || countdownSeconds > 0) return;
+    if (rollTriggeredForRoundRef.current === current.id) return;
+    if (triggeringRollRef.current) return;
+
+    rollTriggeredForRoundRef.current = current.id;
+    triggeringRollRef.current = true;
+
+    void (async () => {
+      try {
+        const result = await triggerJackpotRoll();
+
+        if (result.ok && result.round) {
+          applyRound(result.round);
+          await reloadBets(result.round.id);
+
+          if (result.balance != null) {
+            setBalance(Math.floor(result.balance));
+          } else if (result.round.winner_id === userIdRef.current) {
+            await syncBalance();
+          }
+        } else {
+          console.warn("[MonCasin Jackpot] trigger_jackpot_roll:", result.error);
+          await refreshState();
+          const after = roundRef.current;
+          if (after?.status === "counting") {
+            rollTriggeredForRoundRef.current = null;
+          }
+        }
+      } catch (err) {
+        console.error("[MonCasin Jackpot] trigger_jackpot_roll exception:", err);
+        rollTriggeredForRoundRef.current = null;
+        await refreshState();
+      } finally {
+        triggeringRollRef.current = false;
+      }
+    })();
+  }, [
+    countdownSeconds,
+    round?.id,
+    round?.status,
+    applyRound,
+    reloadBets,
+    refreshState,
+    syncBalance,
   ]);
 
   const uniqueBets = useMemo(() => aggregateBetsByUser(bets), [bets]);

@@ -297,6 +297,10 @@ export interface Database {
         Args: Record<string, never>;
         Returns: Json;
       };
+      trigger_jackpot_roll: {
+        Args: Record<string, never>;
+        Returns: Json;
+      };
     };
     Enums: Record<string, never>;
   };
