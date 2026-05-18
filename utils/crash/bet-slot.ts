@@ -23,10 +23,14 @@ export function createDefaultBetSlots(): [CrashBetSlotUI, CrashBetSlotUI] {
   return [empty(), empty()];
 }
 
-export function parseAutoCashoutTarget(input: string): number | null {
-  const t = input.trim().replace(",", ".");
+/** Parse la cible auto-cashout (nombre strict, 2 décimales). */
+export function parseAutoCashoutTarget(input: string | number): number | null {
+  const t =
+    typeof input === "number"
+      ? String(input)
+      : String(input ?? "").trim().replace(",", ".");
   if (!t) return null;
-  const n = Number.parseFloat(t);
+  const n = parseFloat(t);
   if (!Number.isFinite(n) || n < 1.01) return null;
   return Math.round(n * 100) / 100;
 }
