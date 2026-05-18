@@ -141,8 +141,9 @@ export async function syncCrashFromClient(
 /** Mise via INSERT crash_bets + UPDATE profiles (sans RPC). */
 export async function placeCrashBet(
   amount: number,
-  roundId: string
-): Promise<{ ok: boolean; balance?: number; error: string | null }> {
+  roundId: string,
+  betSlot: 0 | 1 = 0
+): Promise<{ ok: boolean; balance?: number; betId?: string; error: string | null }> {
   const supabase = createClient();
   if (!supabase) return { ok: false, error: "Supabase non configuré" };
 
@@ -189,15 +190,36 @@ export async function placeCrashBet(
     return { ok: false, error: balanceError.message };
   }
 
-  const betRow: CrashBetInsert = {
+  const { data: existing } = await supabase
+    .from("crash_bets")
+    .select("id")
+    .eq("round_id", normalizedRoundId)
+    .eq("user_id", user.id)
+    .eq("bet_slot", betSlot)
+    .maybeSingle();
+
+  if (existing) {
+    await supabase
+      .from("profiles")
+      .update({ balance: currentBalance })
+      .eq("id", user.id);
+    return { ok: false, error: "Mise déjà placée sur ce panneau" };
+  }
+
+  const betRow = {
     round_id: normalizedRoundId,
     user_id: user.id,
     username: profile.username?.trim() || "Joueur",
     bet_amount: safeAmount,
-    status: "active",
+    status: "active" as const,
+    bet_slot: betSlot,
   };
 
-  const { error: betError } = await supabase.from("crash_bets").insert(betRow);
+  const { data: inserted, error: betError } = await supabase
+    .from("crash_bets")
+    .insert(betRow as CrashBetInsert)
+    .select("id")
+    .single();
 
   if (betError) {
     await supabase
@@ -207,13 +229,19 @@ export async function placeCrashBet(
     return { ok: false, error: betError.message };
   }
 
-  return { ok: true, balance: newBalance, error: null };
+  return {
+    ok: true,
+    balance: newBalance,
+    betId: inserted?.id,
+    error: null,
+  };
 }
 
 /** Cashout via UPDATE crash_bets + profiles (sans RPC). */
 export async function cashoutCrash(
   multiplier: number,
-  roundId: string
+  roundId: string,
+  betId?: string
 ): Promise<{
   ok: boolean;
   multiplier?: number;
@@ -238,13 +266,18 @@ export async function cashoutCrash(
     return { ok: false, error: "Non authentifié" };
   }
 
-  const { data: activeBet, error: betError } = await supabase
+  let betQuery = supabase
     .from("crash_bets")
     .select("id, bet_amount")
     .eq("round_id", normalizedRoundId)
     .eq("user_id", user.id)
-    .eq("status", "active")
-    .maybeSingle();
+    .eq("status", "active");
+
+  if (betId) {
+    betQuery = betQuery.eq("id", betId);
+  }
+
+  const { data: activeBet, error: betError } = await betQuery.maybeSingle();
 
   if (betError) return { ok: false, error: betError.message };
   if (!activeBet) return { ok: false, error: "Aucune mise active" };

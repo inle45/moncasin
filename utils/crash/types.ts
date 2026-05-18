@@ -19,6 +19,7 @@ export interface CrashBetRow {
   cashout_multiplier: number | null;
   payout: number | null;
   status: "active" | "cashed_out" | "lost";
+  bet_slot?: number;
 }
 
 export interface CrashPresencePlayer {

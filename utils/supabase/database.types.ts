@@ -103,6 +103,7 @@ export interface Database {
           cashout_multiplier: number | null;
           payout: number | null;
           status: string;
+          bet_slot: number;
           created_at: string;
         };
         Insert: {
@@ -114,6 +115,7 @@ export interface Database {
           cashout_multiplier?: number | null;
           payout?: number | null;
           status?: string;
+          bet_slot?: number;
           created_at?: string;
         };
         Update: {
@@ -125,6 +127,7 @@ export interface Database {
           cashout_multiplier?: number | null;
           payout?: number | null;
           status?: string;
+          bet_slot?: number;
           created_at?: string;
         };
         Relationships: [];

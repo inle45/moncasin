@@ -3,7 +3,7 @@
 import Link from "next/link";
 import {
   CrashCanvas,
-  CrashControls,
+  CrashDualControls,
   CrashHeader,
   CrashPlayersList,
 } from "@/components/crash";
@@ -13,34 +13,33 @@ import { cn } from "@/utils/cn";
 export default function CrashPage() {
   const {
     balance,
-    bet,
+    betSlots,
     phase,
     multiplier,
     crashPoint,
     message,
     crashHistory,
     curvePoints,
-    canPlaceBet,
-    canCashout,
-    potentialWin,
+    crashFlash,
     bettingSecondsLeft,
     roundBets,
     activePlayersCount,
-    hasPlacedBet,
-    hasCashedOut,
     connected,
     roundNumber,
     isDemoMode,
     tickError,
-    placeBet,
-    cashout,
-    changeBet,
+    canPlaceBetForSlot,
+    canCashoutForSlot,
+    placeBetForSlot,
+    cashoutForSlot,
+    changeBetForSlot,
+    setAutoCashoutForSlot,
   } = useCrashGame();
 
   return (
     <div
       className={cn(
-        "relative mx-auto min-h-screen max-w-lg pb-56 sm:max-w-2xl",
+        "relative mx-auto min-h-screen max-w-lg pb-[22rem] sm:max-w-2xl",
         "bg-[radial-gradient(ellipse_at_top,rgba(124,58,237,0.22),transparent_55%),#0B0813]"
       )}
     >
@@ -80,6 +79,7 @@ export default function CrashPage() {
           history={crashHistory}
           bettingSecondsLeft={bettingSecondsLeft}
           roundNumber={roundNumber}
+          crashFlash={crashFlash}
         />
 
         <CrashPlayersList
@@ -89,19 +89,18 @@ export default function CrashPage() {
           connected={connected}
         />
 
-        <CrashControls
-          bet={bet}
+        <CrashDualControls
+          betSlots={betSlots}
           phase={phase}
           multiplier={multiplier}
-          potentialWin={potentialWin}
-          canPlaceBet={canPlaceBet}
-          canCashout={canCashout}
-          hasPlacedBet={hasPlacedBet}
           bettingSecondsLeft={bettingSecondsLeft}
           isDemoMode={isDemoMode}
-          onBetChange={changeBet}
-          onPlaceBet={placeBet}
-          onCashout={cashout}
+          canPlaceBet={canPlaceBetForSlot}
+          canCashout={canCashoutForSlot}
+          onBetChange={changeBetForSlot}
+          onPlaceBet={placeBetForSlot}
+          onCashout={cashoutForSlot}
+          onAutoCashoutChange={setAutoCashoutForSlot}
         />
       </div>
     </div>

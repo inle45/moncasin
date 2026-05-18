@@ -5,14 +5,17 @@ import {
   crashStateSignature,
   runCrashLoopTick,
 } from "@/utils/crash/advance-client";
-import {
-  CRASH_BET_OPTIONS,
-  DEFAULT_CRASH_BET,
-} from "@/utils/crash/constants";
+import { CRASH_BET_OPTIONS } from "@/utils/crash/constants";
 import {
   computeClockOffsetMs,
   postgresNowFromAnchor,
 } from "@/utils/crash/client-clock";
+import {
+  createDefaultBetSlots,
+  parseAutoCashoutTarget,
+  type CrashBetSlotIndex,
+  type CrashBetSlotUI,
+} from "@/utils/crash/bet-slot";
 import { deriveVisualState } from "@/utils/crash/visual-state";
 import { normalizeRoundId } from "@/utils/crash/uuid";
 import { liveStateRowToPublic } from "@/utils/crash/live-state";
@@ -53,6 +56,8 @@ export function useCrashGame() {
   const fallbackSimRef = useRef<LocalCrashSimulator | null>(null);
   const advancingRef = useRef(false);
   const placingBetRef = useRef(false);
+  const autoCashoutFiredRef = useRef<[boolean, boolean]>([false, false]);
+  const prevPhaseRef = useRef<CrashPhase>("betting");
   const lastRealtimeAtRef = useRef(0);
   const lastCurveMRef = useRef(1);
   const lastKnownStateRef = useRef<CrashPublicState | null>(null);
@@ -92,7 +97,9 @@ export function useCrashGame() {
   const [realtimeConnected, setRealtimeConnected] = useState(false);
 
   const [balance, setBalance] = useState(INITIAL_BALANCE);
-  const [bet, setBet] = useState(DEFAULT_CRASH_BET);
+  const [betSlots, setBetSlots] =
+    useState<[CrashBetSlotUI, CrashBetSlotUI]>(createDefaultBetSlots);
+  const [crashFlash, setCrashFlash] = useState(false);
   const [phase, setPhase] = useState<CrashPhase>("betting");
   const [multiplier, setMultiplier] = useState(1);
   const [bettingSecondsLeft, setBettingSecondsLeft] = useState<number | null>(5);
@@ -103,8 +110,6 @@ export function useCrashGame() {
   const [message, setMessage] = useState<string | null>(null);
 
   const [roundBets, setRoundBets] = useState<CrashBetRow[]>([]);
-  const [hasPlacedBet, setHasPlacedBet] = useState(false);
-  const [hasCashedOut, setHasCashedOut] = useState(false);
   const [userId, setUserId] = useState<string | null>(null);
   const [isSyncing, setIsSyncing] = useState(isSupabaseConfigured());
   const [profileError, setProfileError] = useState<string | null>(null);
@@ -135,8 +140,8 @@ export function useCrashGame() {
       roundIdRef.current = state.round_id;
       lastCurveMRef.current = 1;
       setCurvePoints([1]);
-      setHasPlacedBet(false);
-      setHasCashedOut(false);
+      setBetSlots(createDefaultBetSlots());
+      autoCashoutFiredRef.current = [false, false];
     } else if (state.round_id) {
       roundIdRef.current = state.round_id;
     }
@@ -150,11 +155,29 @@ export function useCrashGame() {
 
     const uid = userIdRef.current;
     if (!uid) return;
-    const mine = bets.find((b) => b.user_id === uid);
-    if (mine) {
-      setHasPlacedBet(true);
-      setHasCashedOut(mine.status === "cashed_out");
-    }
+
+    const mine = bets
+      .filter((b) => b.user_id === uid)
+      .sort((a, b) => (a.bet_slot ?? 0) - (b.bet_slot ?? 0));
+
+    setBetSlots((prev) => {
+      const next = createDefaultBetSlots();
+      next[0] = { ...prev[0], ...next[0] };
+      next[1] = { ...prev[1], ...next[1] };
+
+      mine.forEach((row, idx) => {
+        const slot = Math.min(1, row.bet_slot ?? idx) as CrashBetSlotIndex;
+        next[slot] = {
+          ...next[slot],
+          betAmount: row.bet_amount,
+          lockedBetAmount: row.bet_amount,
+          hasPlacedBet: true,
+          hasCashedOut: row.status === "cashed_out",
+          betId: row.id,
+        };
+      });
+      return next;
+    });
   }, []);
 
   const refreshServerState = useCallback(async () => {
@@ -226,8 +249,8 @@ export function useCrashGame() {
       if (!uid) {
         userIdRef.current = null;
         setUserId(null);
-        setHasPlacedBet(false);
-        setHasCashedOut(false);
+        setBetSlots(createDefaultBetSlots());
+        autoCashoutFiredRef.current = [false, false];
         setProfileError(null);
         setBalanceTracked(INITIAL_BALANCE);
         return;
@@ -459,6 +482,15 @@ export function useCrashGame() {
         serverStateRef.current ?? lastKnownStateRef.current;
       if (!state) return;
 
+      if (
+        state.phase === "crashed" &&
+        prevPhaseRef.current === "flying"
+      ) {
+        setCrashFlash(true);
+        window.setTimeout(() => setCrashFlash(false), 500);
+      }
+      prevPhaseRef.current = state.phase;
+
       const visual = deriveVisualState(state, nowSynced(), visualStateOptions());
 
       setPhase(visual.phase);
@@ -490,125 +522,263 @@ export function useCrashGame() {
     return () => clearInterval(id);
   }, [useFallback, nowSynced, visualStateOptions]);
 
-  const placeBet = useCallback(async () => {
-    if (phase !== "betting" || (bettingSecondsLeft ?? 0) <= 0) return;
-    if (hasPlacedBet) return;
-
-    if (!userIdRef.current) {
-      setMessage("Connecte-toi pour miser en multijoueur.");
-      window.setTimeout(() => setMessage(null), 2500);
-      return;
-    }
-
-    if (balance < bet) {
-      setMessage("Solde insuffisant.");
-      window.setTimeout(() => setMessage(null), 2000);
-      return;
-    }
-
-    const roundId = normalizeRoundId(
-      roundIdRef.current ||
-        serverStateRef.current?.round_id ||
-        serverState?.round_id
-    );
-    if (!roundId) {
-      setMessage("Manche non synchronisée — attente du round_id…");
-      void refreshServerState();
-      window.setTimeout(() => setMessage(null), 2500);
-      return;
-    }
-
-    placingBetRef.current = true;
-    try {
-      const { ok, balance: newBal, error } = await placeCrashBet(bet, roundId);
-      if (ok) {
-        if (newBal != null) setBalanceTracked(newBal);
-        setHasPlacedBet(true);
-        setMessage(`Mise ${bet} jetons enregistrée`);
-        void reloadBets();
-      } else {
-        setMessage(error ?? "Mise refusée");
-      }
-      window.setTimeout(() => setMessage(null), 2000);
-    } finally {
-      placingBetRef.current = false;
-    }
-  }, [
-    phase,
-    bettingSecondsLeft,
-    hasPlacedBet,
-    balance,
-    bet,
-    serverState,
-    setBalanceTracked,
-    reloadBets,
-    refreshServerState,
-  ]);
-
-  const cashout = useCallback(async () => {
-    if (phase !== "flying" || !hasPlacedBet || hasCashedOut) return;
-
-    const roundId =
-      roundIdRef.current ||
-      serverStateRef.current?.round_id ||
-      serverState?.round_id ||
-      "";
-    const serverNow = await fetchCrashServerNowMs();
-    syncClockFromPostgres(serverNow);
-
+  const getSyncedMultiplier = useCallback(() => {
     const liveState = serverStateRef.current ?? lastKnownStateRef.current;
-    const cashoutMultiplier = liveState
-      ? deriveVisualState(liveState, nowSynced(), visualStateOptions())
-          .multiplier
-      : multiplier;
+    if (!liveState) return multiplier;
+    return deriveVisualState(liveState, nowSynced(), visualStateOptions())
+      .multiplier;
+  }, [multiplier, nowSynced, visualStateOptions]);
 
-    const { ok, balance: newBal, payout, error } = await cashoutCrash(
-      cashoutMultiplier,
-      roundId
-    );
-    if (ok) {
-      if (newBal != null) setBalanceTracked(newBal);
-      setHasCashedOut(true);
-      setMessage(
-        payout != null ? `Cashout +${payout} jetons` : "Cashout réussi"
-      );
-      void reloadBets();
-    } else {
-      setMessage(error ?? "Cashout impossible");
-    }
-    window.setTimeout(() => setMessage(null), 2000);
-  }, [
-    phase,
-    hasPlacedBet,
-    hasCashedOut,
-    multiplier,
-    nowSynced,
-    visualStateOptions,
-    syncClockFromPostgres,
-    setBalanceTracked,
-    reloadBets,
-  ]);
+  const placeBetForSlot = useCallback(
+    async (slotIndex: CrashBetSlotIndex) => {
+      const slot = betSlots[slotIndex];
+      if (phase !== "betting" || (bettingSecondsLeft ?? 0) <= 0) return;
+      if (slot.hasPlacedBet) return;
 
-  const changeBet = useCallback(
-    (delta: number) => {
-      if (hasPlacedBet) return;
-      const idx = CRASH_BET_OPTIONS.indexOf(
-        bet as (typeof CRASH_BET_OPTIONS)[number]
+      const amount = slot.betAmount;
+
+      if (useFallback || isDemoMode()) {
+        if (balance < amount) {
+          setMessage("Solde insuffisant.");
+          window.setTimeout(() => setMessage(null), 2000);
+          return;
+        }
+        setBalanceTracked(balance - amount);
+        setBetSlots((prev) => {
+          const next: [CrashBetSlotUI, CrashBetSlotUI] = [...prev] as [
+            CrashBetSlotUI,
+            CrashBetSlotUI,
+          ];
+          next[slotIndex] = {
+            ...next[slotIndex],
+            hasPlacedBet: true,
+            lockedBetAmount: amount,
+          };
+          return next;
+        });
+        setMessage(`Mise ${slotIndex + 1} : ${amount} jetons`);
+        window.setTimeout(() => setMessage(null), 2000);
+        return;
+      }
+
+      if (!userIdRef.current) {
+        setMessage("Connecte-toi pour miser en multijoueur.");
+        window.setTimeout(() => setMessage(null), 2500);
+        return;
+      }
+
+      if (balance < amount) {
+        setMessage("Solde insuffisant.");
+        window.setTimeout(() => setMessage(null), 2000);
+        return;
+      }
+
+      const roundId = normalizeRoundId(
+        roundIdRef.current ||
+          serverStateRef.current?.round_id ||
+          serverState?.round_id
       );
-      const next = Math.max(
-        0,
-        Math.min(CRASH_BET_OPTIONS.length - 1, idx + delta)
-      );
-      setBet(CRASH_BET_OPTIONS[next]);
+      if (!roundId) {
+        setMessage("Manche non synchronisée — attente du round_id…");
+        void refreshServerState();
+        window.setTimeout(() => setMessage(null), 2500);
+        return;
+      }
+
+      placingBetRef.current = true;
+      try {
+        const { ok, balance: newBal, betId, error } = await placeCrashBet(
+          amount,
+          roundId,
+          slotIndex
+        );
+        if (ok) {
+          if (newBal != null) setBalanceTracked(newBal);
+          setBetSlots((prev) => {
+            const next: [CrashBetSlotUI, CrashBetSlotUI] = [...prev] as [
+              CrashBetSlotUI,
+              CrashBetSlotUI,
+            ];
+            next[slotIndex] = {
+              ...next[slotIndex],
+              hasPlacedBet: true,
+              lockedBetAmount: amount,
+              betId: betId ?? null,
+            };
+            return next;
+          });
+          setMessage(`Mise ${slotIndex + 1} : ${amount} jetons`);
+          void reloadBets();
+        } else {
+          setMessage(error ?? "Mise refusée");
+        }
+        window.setTimeout(() => setMessage(null), 2000);
+      } finally {
+        placingBetRef.current = false;
+      }
     },
-    [bet, hasPlacedBet]
+    [
+      betSlots,
+      phase,
+      bettingSecondsLeft,
+      balance,
+      useFallback,
+      serverState,
+      setBalanceTracked,
+      reloadBets,
+      refreshServerState,
+    ]
   );
 
+  const cashoutForSlot = useCallback(
+    async (slotIndex: CrashBetSlotIndex) => {
+      const slot = betSlots[slotIndex];
+      if (phase !== "flying" || !slot.hasPlacedBet || slot.hasCashedOut) return;
+
+      const roundId =
+        roundIdRef.current ||
+        serverStateRef.current?.round_id ||
+        serverState?.round_id ||
+        "";
+
+      const serverNow = await fetchCrashServerNowMs();
+      syncClockFromPostgres(serverNow);
+      const cashoutMultiplier = getSyncedMultiplier();
+
+      if (useFallback || isDemoMode()) {
+        const payout = Math.floor(
+          (slot.lockedBetAmount || slot.betAmount) * cashoutMultiplier
+        );
+        setBalanceTracked(balance + payout);
+        setBetSlots((prev) => {
+          const next: [CrashBetSlotUI, CrashBetSlotUI] = [...prev] as [
+            CrashBetSlotUI,
+            CrashBetSlotUI,
+          ];
+          next[slotIndex] = { ...next[slotIndex], hasCashedOut: true };
+          return next;
+        });
+        setMessage(`Cashout ${slotIndex + 1} +${payout} jetons`);
+        window.setTimeout(() => setMessage(null), 2000);
+        return;
+      }
+
+      const { ok, balance: newBal, payout, error } = await cashoutCrash(
+        cashoutMultiplier,
+        roundId,
+        slot.betId ?? undefined
+      );
+      if (ok) {
+        if (newBal != null) setBalanceTracked(newBal);
+        setBetSlots((prev) => {
+          const next: [CrashBetSlotUI, CrashBetSlotUI] = [...prev] as [
+            CrashBetSlotUI,
+            CrashBetSlotUI,
+          ];
+          next[slotIndex] = { ...next[slotIndex], hasCashedOut: true };
+          return next;
+        });
+        setMessage(
+          payout != null
+            ? `Cashout ${slotIndex + 1} +${payout} jetons`
+            : "Cashout réussi"
+        );
+        void reloadBets();
+      } else {
+        setMessage(error ?? "Cashout impossible");
+      }
+      window.setTimeout(() => setMessage(null), 2000);
+    },
+    [
+      betSlots,
+      phase,
+      balance,
+      useFallback,
+      getSyncedMultiplier,
+      syncClockFromPostgres,
+      setBalanceTracked,
+      reloadBets,
+      serverState,
+    ]
+  );
+
+  const changeBetForSlot = useCallback(
+    (slotIndex: CrashBetSlotIndex, delta: number) => {
+      setBetSlots((prev) => {
+        const slot = prev[slotIndex];
+        if (slot.hasPlacedBet) return prev;
+        const idx = CRASH_BET_OPTIONS.indexOf(
+          slot.betAmount as (typeof CRASH_BET_OPTIONS)[number]
+        );
+        const nextIdx = Math.max(
+          0,
+          Math.min(CRASH_BET_OPTIONS.length - 1, idx + delta)
+        );
+        const next: [CrashBetSlotUI, CrashBetSlotUI] = [...prev] as [
+          CrashBetSlotUI,
+          CrashBetSlotUI,
+        ];
+        next[slotIndex] = {
+          ...slot,
+          betAmount: CRASH_BET_OPTIONS[nextIdx],
+        };
+        return next;
+      });
+    },
+    []
+  );
+
+  const setAutoCashoutForSlot = useCallback(
+    (slotIndex: CrashBetSlotIndex, value: string) => {
+      setBetSlots((prev) => {
+        const next: [CrashBetSlotUI, CrashBetSlotUI] = [...prev] as [
+          CrashBetSlotUI,
+          CrashBetSlotUI,
+        ];
+        next[slotIndex] = { ...next[slotIndex], autoCashoutInput: value };
+        return next;
+      });
+    },
+    []
+  );
+
+  useEffect(() => {
+    if (phase !== "flying") return;
+
+    const m = Math.floor(getSyncedMultiplier() * 100) / 100;
+
+    ([0, 1] as const).forEach((slotIndex) => {
+      const slot = betSlots[slotIndex];
+      if (!slot.hasPlacedBet || slot.hasCashedOut) return;
+      const target = parseAutoCashoutTarget(slot.autoCashoutInput);
+      if (target == null) return;
+      if (autoCashoutFiredRef.current[slotIndex]) return;
+      if (m >= target) {
+        autoCashoutFiredRef.current[slotIndex] = true;
+        void cashoutForSlot(slotIndex);
+      }
+    });
+  }, [phase, multiplier, betSlots, getSyncedMultiplier, cashoutForSlot]);
+
   const activePlayersCount = roundBets.filter((b) => b.status === "active").length;
-  const myBet = userId
-    ? roundBets.find((b) => b.user_id === userId)
-    : undefined;
-  const activeBet = myBet?.bet_amount ?? 0;
+
+  const canPlaceBetForSlot = useCallback(
+    (slotIndex: CrashBetSlotIndex) =>
+      phase === "betting" &&
+      (bettingSecondsLeft ?? 0) > 0 &&
+      !betSlots[slotIndex].hasPlacedBet &&
+      balance >= betSlots[slotIndex].betAmount &&
+      (!!userId || useFallback || isDemoMode()),
+    [phase, bettingSecondsLeft, betSlots, balance, userId, useFallback]
+  );
+
+  const canCashoutForSlot = useCallback(
+    (slotIndex: CrashBetSlotIndex) =>
+      phase === "flying" &&
+      betSlots[slotIndex].hasPlacedBet &&
+      !betSlots[slotIndex].hasCashedOut,
+    [phase, betSlots]
+  );
 
   const hasLiveRound = Boolean(
     serverState?.round_id || roundIdRef.current
@@ -616,24 +786,22 @@ export function useCrashGame() {
   const multiplayerLive = hasLiveRound && !useFallback;
   const demo = isDemoMode() || !userId;
 
+  const totalActiveBet = betSlots.reduce(
+    (sum, s) => sum + (s.hasPlacedBet && !s.hasCashedOut ? s.lockedBetAmount || s.betAmount : 0),
+    0
+  );
+
   return {
     balance,
-    bet,
+    betSlots,
     phase,
     multiplier,
-    activeBet,
+    activeBet: totalActiveBet,
     crashPoint,
     message,
     crashHistory,
     curvePoints,
-    canPlaceBet:
-      phase === "betting" &&
-      (bettingSecondsLeft ?? 0) > 0 &&
-      !hasPlacedBet &&
-      balance >= bet &&
-      !!userId,
-    canCashout: phase === "flying" && hasPlacedBet && !hasCashedOut,
-    potentialWin: Math.floor((activeBet || bet) * multiplier),
+    crashFlash,
     bettingSecondsLeft,
     chronoReady:
       useFallback ||
@@ -643,9 +811,10 @@ export function useCrashGame() {
           .awaitingServerSync),
     roundBets,
     presence: [],
-    activePlayersCount: Math.max(activePlayersCount, roundBets.length > 0 ? roundBets.length : 0),
-    hasPlacedBet,
-    hasCashedOut,
+    activePlayersCount: Math.max(
+      activePlayersCount,
+      roundBets.length > 0 ? roundBets.length : 0
+    ),
     connected: multiplayerLive,
     roundNumber,
     profileLoading: false,
@@ -654,8 +823,11 @@ export function useCrashGame() {
     tickError,
     isDemoMode: demo,
     useFallback,
-    placeBet,
-    cashout,
-    changeBet,
+    canPlaceBetForSlot,
+    canCashoutForSlot,
+    placeBetForSlot,
+    cashoutForSlot,
+    changeBetForSlot,
+    setAutoCashoutForSlot,
   };
 }

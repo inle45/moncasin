@@ -46,6 +46,8 @@ const config: Config = {
         "confetti-fall": "confetti-fall 2.2s ease-out forwards",
         "coin-fall": "coin-fall 2.4s ease-in forwards",
         "reel-column-blur": "reel-column-blur 0.15s linear infinite",
+        "crash-flash": "crash-flash 0.45s ease-out forwards",
+        "crash-shockwave": "crash-shockwave 0.85s ease-out forwards",
       },
       keyframes: {
         "pulse-glow": {
@@ -88,6 +90,14 @@ const config: Config = {
           "0%": { transform: "translateY(-4px)", filter: "blur(0px)" },
           "50%": { transform: "translateY(4px)", filter: "blur(1px)" },
           "100%": { transform: "translateY(-4px)", filter: "blur(0px)" },
+        },
+        "crash-flash": {
+          "0%": { opacity: "0.85" },
+          "100%": { opacity: "0" },
+        },
+        "crash-shockwave": {
+          "0%": { width: "12px", height: "12px", opacity: "0.9" },
+          "100%": { width: "140px", height: "140px", opacity: "0" },
         },
       },
     },
