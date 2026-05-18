@@ -263,13 +263,23 @@ export async function advanceJackpotTick(): Promise<
 }
 
 /**
- * Lance le tirage quand le décompte est terminé (`trigger_jackpot_roll()`).
+ * Lance le tirage quand le décompte est terminé (`trigger_jackpot_roll(p_round_id uuid)`).
  * Réponse attendue : `{ ok, round, balance? }`.
  */
-export async function triggerJackpotRoll(): Promise<TriggerJackpotRollResult> {
+export async function triggerJackpotRoll(
+  roundId: string
+): Promise<TriggerJackpotRollResult> {
   const supabase = createClient();
   if (!supabase) {
     return { ok: false, error: "Supabase non configuré" };
+  }
+
+  if (!roundId) {
+    return {
+      ok: false,
+      error: "ID de manche manquant (p_round_id)",
+      debug: { step: "missing_round_id" },
+    };
   }
 
   const {
@@ -283,11 +293,16 @@ export async function triggerJackpotRoll(): Promise<TriggerJackpotRollResult> {
     return { ok: false, error: msg, debug: { step: "auth", postgrestMessage: msg } };
   }
 
-  logJackpotRpc("trigger_jackpot_roll REQUEST", { sessionUserId: user.id });
+  const params = { p_round_id: roundId };
+
+  logJackpotRpc("trigger_jackpot_roll REQUEST", {
+    sessionUserId: user.id,
+    params,
+  });
 
   try {
     const { data: wrapped, timedOut, error: timeoutErr } = await safeQuery(
-      supabase.rpc("trigger_jackpot_roll")
+      supabase.rpc("trigger_jackpot_roll", params)
     );
 
     if (timedOut || timeoutErr) {

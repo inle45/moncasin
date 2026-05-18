@@ -301,7 +301,7 @@ export interface Database {
         Returns: Json;
       };
       trigger_jackpot_roll: {
-        Args: Record<string, never>;
+        Args: { p_round_id: string };
         Returns: Json;
       };
     };

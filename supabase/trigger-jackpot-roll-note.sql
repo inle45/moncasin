@@ -1,6 +1,6 @@
 -- Référence MonCasin — trigger_jackpot_roll + RLS
 --
--- Le front appelle : supabase.rpc('trigger_jackpot_roll')
+-- Le front appelle : supabase.rpc('trigger_jackpot_roll', { p_round_id: '<uuid>' })
 -- Réponse attendue : { "ok": true, "round": { "status": "rolling", ... } }
 --
 -- IMPORTANT : la fonction DOIT être SECURITY DEFINER (comme enter_jackpot_arena),

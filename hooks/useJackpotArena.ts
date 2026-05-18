@@ -421,7 +421,7 @@ export function useJackpotArena() {
 
         setCriticalError(null);
         lastTriggerErrorRef.current = null;
-        const result = await triggerJackpotRoll();
+        const result = await triggerJackpotRoll(current.id);
 
         if (result.ok && result.round) {
           applyRound(result.round);
