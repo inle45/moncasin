@@ -33,6 +33,7 @@ export default function JackpotPage() {
     isSyncing,
     countdownSeconds,
     showWinnerFlash,
+    winnerPayout,
     isDemoMode,
   } = useJackpotArena();
 
@@ -142,7 +143,7 @@ export default function JackpotPage() {
       <JackpotWinnerOverlay
         active={showWinnerFlash && status === "ended"}
         username={winnerBet?.username ?? winnerProfile?.username ?? "Joueur"}
-        payout={round?.winner_payout ?? 0}
+        payout={winnerPayout}
         avatarUrl={winnerProfile?.avatar_url}
         vipStatus={winnerProfile?.vip_status}
         profileFrame={winnerProfile?.profile_frame}

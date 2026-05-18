@@ -1,30 +1,39 @@
 import {
   advanceJackpotTick,
   fetchActiveJackpotRound,
+  fetchJackpotBets,
 } from "@/utils/supabase/jackpot-room";
-import type { JackpotRound } from "@/utils/jackpot/types";
+import type { JackpotBetRow, JackpotRound } from "@/utils/jackpot/types";
 
 export async function runJackpotLoopTick(): Promise<{
   round: JackpotRound | null;
+  bets: JackpotBetRow[];
   serverNowMs: number | null;
   errors: string[];
 }> {
   const errors: string[] = [];
-  let round: JackpotRound | null = null;
-  let serverNowMs: number | null = null;
 
   const tick = await advanceJackpotTick();
   if (tick.error) errors.push(tick.error);
-  if (tick.data) {
-    round = tick.data;
-    serverNowMs = tick.serverNowMs ?? null;
-  }
 
+  let round = tick.data;
   if (!round) {
     const fresh = await fetchActiveJackpotRound();
     if (fresh.error) errors.push(fresh.error);
     round = fresh.data;
   }
 
-  return { round, serverNowMs, errors };
+  const bets: JackpotBetRow[] = [];
+  if (round?.id) {
+    const { bets: rows, error } = await fetchJackpotBets(round.id);
+    if (error) errors.push(error);
+    bets.push(...rows);
+  }
+
+  return {
+    round,
+    bets,
+    serverNowMs: tick.serverNowMs ?? null,
+    errors,
+  };
 }

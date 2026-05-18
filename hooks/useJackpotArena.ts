@@ -2,7 +2,14 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { runJackpotLoopTick } from "@/utils/jackpot/advance-client";
-import { JACKPOT_LOOP_TICK_MS, JACKPOT_MIN_BET } from "@/utils/jackpot/constants";
+import {
+  JACKPOT_COUNTDOWN_SECONDS,
+  JACKPOT_ENDED_DISPLAY_MS,
+  JACKPOT_LOOP_TICK_MS,
+  JACKPOT_MIN_BET,
+  JACKPOT_STATE_POLL_MS,
+} from "@/utils/jackpot/constants";
+import { parseJackpotBet, parseJackpotRound } from "@/utils/jackpot/parse";
 import { buildPotSegments } from "@/utils/jackpot/segments";
 import type { JackpotBetRow, JackpotRound } from "@/utils/jackpot/types";
 import { INITIAL_BALANCE } from "@/utils/slot/constants";
@@ -10,17 +17,34 @@ import { createClient } from "@/utils/supabase/client";
 import { isDemoMode, isSupabaseConfigured } from "@/utils/supabase/config";
 import {
   JACKPOT_CHANNEL,
+  enterJackpotArena,
   fetchActiveJackpotRound,
   fetchJackpotBets,
-  placeJackpotBet,
 } from "@/utils/supabase/jackpot-room";
 import { fetchProfile } from "@/utils/supabase/profiles";
+
+function mergeBet(
+  prev: JackpotBetRow[],
+  incoming: JackpotBetRow
+): JackpotBetRow[] {
+  const idx = prev.findIndex((b) => b.id === incoming.id);
+  if (idx >= 0) {
+    const next = [...prev];
+    next[idx] = incoming;
+    return next;
+  }
+  return [...prev, incoming].sort(
+    (a, b) =>
+      new Date(a.created_at).getTime() - new Date(b.created_at).getTime()
+  );
+}
 
 export function useJackpotArena() {
   const roundRef = useRef<JackpotRound | null>(null);
   const userIdRef = useRef<string | null>(null);
   const advancingRef = useRef(false);
   const placingRef = useRef(false);
+  const countingStartedAtRef = useRef<number | null>(null);
 
   const [round, setRound] = useState<JackpotRound | null>(null);
   const [bets, setBets] = useState<JackpotBetRow[]>([]);
@@ -33,21 +57,40 @@ export function useJackpotArena() {
   const [countdownSeconds, setCountdownSeconds] = useState<number | null>(null);
   const [showWinnerFlash, setShowWinnerFlash] = useState(false);
   const prevStatusRef = useRef<string | null>(null);
+  const prevRoundIdRef = useRef<string | null>(null);
 
   roundRef.current = round;
 
   const applyRound = useCallback((next: JackpotRound | null) => {
     if (!next) return;
-    const prevStatus = prevStatusRef.current;
-    prevStatusRef.current = next.status;
 
+    const prevStatus = prevStatusRef.current;
+    const prevRoundId = prevRoundIdRef.current;
+    prevStatusRef.current = next.status;
+    prevRoundIdRef.current = next.id;
+
+    if (next.status === "counting" && prevStatus !== "counting") {
+      countingStartedAtRef.current = Date.now();
+    }
+    if (next.status === "waiting" && prevRoundId && prevRoundId !== next.id) {
+      setShowWinnerFlash(false);
+      setBets([]);
+    }
     if (next.status === "ended" && prevStatus !== "ended") {
       setShowWinnerFlash(true);
-      window.setTimeout(() => setShowWinnerFlash(false), 4500);
+      window.setTimeout(() => setShowWinnerFlash(false), JACKPOT_ENDED_DISPLAY_MS);
     }
 
     roundRef.current = next;
     setRound(next);
+  }, []);
+
+  const applyBetRow = useCallback((row: Record<string, unknown>) => {
+    const bet = parseJackpotBet(row);
+    if (!bet) return;
+    const rid = roundRef.current?.id;
+    if (rid && bet.round_id !== rid) return;
+    setBets((prev) => mergeBet(prev, bet));
   }, []);
 
   const reloadBets = useCallback(async (roundId?: string) => {
@@ -58,13 +101,21 @@ export function useJackpotArena() {
   }, []);
 
   const refreshState = useCallback(async () => {
-    const { data } = await fetchActiveJackpotRound();
+    const { data, error } = await fetchActiveJackpotRound();
+    if (error) return null;
     if (data) {
       applyRound(data);
       await reloadBets(data.id);
     }
     return data;
   }, [applyRound, reloadBets]);
+
+  const syncBalance = useCallback(async (uid?: string | null) => {
+    const id = uid ?? userIdRef.current;
+    if (!id) return;
+    const { profile } = await fetchProfile(id);
+    if (profile) setBalance(Math.floor(Number(profile.balance)));
+  }, []);
 
   const bootstrap = useCallback(async () => {
     if (!isSupabaseConfigured() || isDemoMode()) {
@@ -81,19 +132,12 @@ export function useJackpotArena() {
       const uid = session?.user?.id ?? null;
       userIdRef.current = uid;
       setUserId(uid);
-      if (uid) {
-        const { profile } = await fetchProfile(uid);
-        if (profile) setBalance(Math.floor(Number(profile.balance)));
-      }
+      if (uid) await syncBalance(uid);
     }
 
-    let state = await refreshState();
-    if (!state) {
-      await runJackpotLoopTick();
-      state = await refreshState();
-    }
+    await refreshState();
     setIsSyncing(false);
-  }, [refreshState]);
+  }, [refreshState, syncBalance]);
 
   useEffect(() => {
     void bootstrap();
@@ -106,22 +150,38 @@ export function useJackpotArena() {
     if (!supabase) return;
 
     const channel = supabase
-      .channel(JACKPOT_CHANNEL)
+      .channel(`${JACKPOT_CHANNEL}:${Date.now()}`)
       .on(
         "postgres_changes",
         { event: "*", schema: "public", table: "jackpot_rounds" },
-        () => {
-          void refreshState();
+        (payload) => {
+          const row = (payload.new ?? payload.old) as Record<string, unknown>;
+          if (!row?.id) {
+            void refreshState();
+            return;
+          }
+          const parsed = parseJackpotRound(row);
+          if (parsed) {
+            applyRound(parsed);
+            if (payload.eventType !== "DELETE") {
+              void reloadBets(parsed.id);
+            }
+          }
         }
       )
       .on(
         "postgres_changes",
         { event: "*", schema: "public", table: "jackpot_bets" },
-        () => {
-          void reloadBets();
+        (payload) => {
+          if (payload.new && typeof payload.new === "object") {
+            applyBetRow(payload.new as Record<string, unknown>);
+          }
+          const rid = roundRef.current?.id;
+          if (rid) void reloadBets(rid);
         }
       )
-      .subscribe((status) => {
+      .subscribe((status, err) => {
+        if (err) console.warn("[jackpot realtime]", err);
         setConnected(status === "SUBSCRIBED");
         if (status === "SUBSCRIBED") void refreshState();
       });
@@ -129,10 +189,16 @@ export function useJackpotArena() {
     return () => {
       void supabase.removeChannel(channel);
     };
-  }, [refreshState, reloadBets]);
+  }, [applyRound, applyBetRow, refreshState, reloadBets]);
 
   useEffect(() => {
     if (!isSupabaseConfigured() || isDemoMode()) return;
+
+    const poll = async () => {
+      await refreshState();
+    };
+
+    const pollId = setInterval(() => void poll(), JACKPOT_STATE_POLL_MS);
 
     const runTick = async () => {
       if (advancingRef.current) return;
@@ -141,7 +207,13 @@ export function useJackpotArena() {
         const tick = await runJackpotLoopTick();
         if (tick.round) {
           applyRound(tick.round);
-          await reloadBets(tick.round.id);
+          setBets(tick.bets);
+        }
+        if (
+          tick.round?.status === "ended" &&
+          tick.round.winner_id === userIdRef.current
+        ) {
+          await syncBalance();
         }
       } finally {
         advancingRef.current = false;
@@ -149,24 +221,41 @@ export function useJackpotArena() {
     };
 
     void runTick();
-    const id = setInterval(() => void runTick(), JACKPOT_LOOP_TICK_MS);
-    return () => clearInterval(id);
-  }, [applyRound, reloadBets]);
+    const tickId = setInterval(() => void runTick(), JACKPOT_LOOP_TICK_MS);
+
+    return () => {
+      clearInterval(pollId);
+      clearInterval(tickId);
+    };
+  }, [applyRound, refreshState, syncBalance]);
 
   useEffect(() => {
-    if (round?.status !== "counting" || !round.counting_ends_at) {
+    if (round?.status !== "counting") {
       setCountdownSeconds(null);
       return;
     }
 
     const tick = () => {
-      const end = new Date(round.counting_ends_at!).getTime();
-      const left = Math.max(0, Math.ceil((end - Date.now()) / 1000));
-      setCountdownSeconds(left);
+      if (round.counting_ends_at) {
+        const end = new Date(round.counting_ends_at).getTime();
+        const left = Math.max(
+          0,
+          Math.min(
+            JACKPOT_COUNTDOWN_SECONDS,
+            Math.ceil((end - Date.now()) / 1000)
+          )
+        );
+        setCountdownSeconds(left);
+        return;
+      }
+
+      const started = countingStartedAtRef.current ?? Date.now();
+      const elapsed = Math.floor((Date.now() - started) / 1000);
+      setCountdownSeconds(Math.max(0, JACKPOT_COUNTDOWN_SECONDS - elapsed));
     };
 
     tick();
-    const id = setInterval(tick, 250);
+    const id = setInterval(tick, 200);
     return () => clearInterval(id);
   }, [round?.status, round?.counting_ends_at]);
 
@@ -185,6 +274,12 @@ export function useJackpotArena() {
     [bets, round?.winner_id]
   );
 
+  const winnerPayout = useMemo(() => {
+    if (round?.winner_payout != null) return round.winner_payout;
+    const pot = round?.total_pot ?? 0;
+    return Math.floor(pot * (1 - 0.02));
+  }, [round?.winner_payout, round?.total_pot]);
+
   const canBet =
     !!userId &&
     !myBet &&
@@ -192,28 +287,30 @@ export function useJackpotArena() {
     balance >= betAmount &&
     betAmount >= JACKPOT_MIN_BET;
 
-  const placeBet = useCallback(async () => {
-    if (!canBet || placingRef.current) return;
+  const enterArena = useCallback(async () => {
+    const uid = userIdRef.current;
+    if (!canBet || !uid || placingRef.current) return;
 
     placingRef.current = true;
     setMessage(null);
     try {
-      const { ok, balance: newBal, round: nextRound, error } =
-        await placeJackpotBet(betAmount);
+      const result = await enterJackpotArena(uid, betAmount);
 
-      if (ok) {
-        if (newBal != null) setBalance(newBal);
-        if (nextRound) applyRound(nextRound);
-        await reloadBets(nextRound?.id);
-        setMessage(`Mise de ${betAmount} jetons enregistrée !`);
+      if (result.ok) {
+        if (result.balance != null) setBalance(result.balance);
+        else await syncBalance(uid);
+        if (result.round) applyRound(result.round);
+        if (result.bet) setBets((prev) => mergeBet(prev, result.bet!));
+        await reloadBets(result.round?.id);
+        setMessage(`Tu entres dans l'arène avec ${betAmount} jetons !`);
       } else {
-        setMessage(error ?? "Mise refusée");
+        setMessage(result.error ?? "Entrée refusée");
       }
       window.setTimeout(() => setMessage(null), 2500);
     } finally {
       placingRef.current = false;
     }
-  }, [canBet, betAmount, applyRound, reloadBets]);
+  }, [canBet, betAmount, applyRound, reloadBets, syncBalance]);
 
   return {
     round,
@@ -225,8 +322,10 @@ export function useJackpotArena() {
     userId,
     myBet,
     winnerBet,
+    winnerPayout,
     canBet,
-    placeBet,
+    enterArena,
+    placeBet: enterArena,
     message,
     connected,
     isSyncing,

@@ -289,6 +289,16 @@ export interface Database {
         Args: { p_amount: number };
         Returns: Json;
       };
+      enter_jackpot_arena: {
+        Args: {
+          p_user_id: string;
+          p_amount: number;
+          p_bet_amount?: number;
+          user_id?: string;
+          amount?: number;
+        };
+        Returns: Json;
+      };
       jackpot_advance_tick: {
         Args: Record<string, never>;
         Returns: Json;
