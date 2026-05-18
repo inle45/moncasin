@@ -10,17 +10,17 @@ export interface CrashVisualState {
   bettingSecondsLeft: number | null;
   flyingStartedAt: string | null;
   crashPoint: number | null;
-  /** Affichage basé sur l'horloge locale (en attente de sync serveur). */
+  /** Timestamps manquants ou horloge pas encore synchronisée. */
   awaitingServerSync: boolean;
 }
 
 /**
- * Dérive l'affichage à partir des timestamps Supabase + horloge locale.
- * Le jeu reste fluide même si Realtime ou les RPC client échouent.
+ * Dérive l'affichage à partir des timestamps Supabase.
+ * `nowMs` doit être l'heure Supabase (Date.now() + offset), pas l'horloge brute du navigateur.
  */
 export function deriveVisualState(
   server: CrashPublicState | null,
-  now = Date.now()
+  nowMs = Date.now()
 ): CrashVisualState {
   if (!server) {
     return {
@@ -41,7 +41,7 @@ export function deriveVisualState(
     return {
       phase: "betting",
       multiplier: 1,
-      bettingSecondsLeft: computeBettingSecondsLeft(server.betting_ends_at),
+      bettingSecondsLeft: computeBettingSecondsLeft(server.betting_ends_at, nowMs),
       flyingStartedAt: null,
       crashPoint: null,
       awaitingServerSync: bettingEnd === null,
@@ -49,10 +49,10 @@ export function deriveVisualState(
   }
 
   if (server.phase === "flying") {
-    const start = flyingStart ?? bettingEnd ?? now;
+    const start = flyingStart ?? bettingEnd ?? nowMs;
     return {
       phase: "flying",
-      multiplier: multiplierAtElapsedMs(Math.max(0, now - start)),
+      multiplier: multiplierAtElapsedMs(Math.max(0, nowMs - start)),
       bettingSecondsLeft: null,
       flyingStartedAt: server.flying_started_at,
       crashPoint: null,

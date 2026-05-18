@@ -15,11 +15,12 @@ export function isValidIsoTimestamp(value: string | null | undefined): boolean {
 
 /** Secondes restantes pour miser ; `null` = chrono non synchronisé (afficher « Sync… »). */
 export function computeBettingSecondsLeft(
-  bettingEndsAt: string | null | undefined
+  bettingEndsAt: string | null | undefined,
+  nowMs = Date.now()
 ): number | null {
   const endsMs = parseIsoMs(bettingEndsAt);
   if (endsMs === null) return null;
-  const left = Math.ceil((endsMs - Date.now()) / 1000);
+  const left = Math.ceil((endsMs - nowMs) / 1000);
   if (!Number.isFinite(left)) return null;
   return Math.max(0, Math.min(CRASH_BETTING_SECONDS + 1, left));
 }

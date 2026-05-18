@@ -3,6 +3,7 @@ import { logCrashTick } from "@/utils/crash/tick-log";
 import type { CrashPublicState } from "@/utils/crash/types";
 import {
   advanceCrashTick,
+  fetchCrashServerNowMs,
   fetchCrashStateFromTable,
 } from "@/utils/supabase/crash-room";
 
@@ -12,6 +13,8 @@ export interface CrashLoopTickResult {
   state: CrashPublicState | null;
   source: CrashTickSource;
   errors: string[];
+  /** Horloge Supabase au moment du tick (pour offset UI). */
+  serverTimeMs: number | null;
 }
 
 /** Signature stable pour éviter les re-renders inutiles (chrono 4↔3). */
@@ -30,6 +33,15 @@ export function crashStateSignature(state: CrashPublicState): string {
 /**
  * Avance la manche : RPC client → API serveur (/api/crash/loop) → lecture table.
  */
+async function resolveServerTimeMs(
+  fromResponse: number | null | undefined
+): Promise<number | null> {
+  if (fromResponse != null && Number.isFinite(fromResponse)) {
+    return fromResponse;
+  }
+  return fetchCrashServerNowMs();
+}
+
 export async function runCrashLoopTick(): Promise<CrashLoopTickResult> {
   const errors: string[] = [];
 
@@ -39,7 +51,8 @@ export async function runCrashLoopTick(): Promise<CrashLoopTickResult> {
       phase: rpc.data.phase,
       round_id: rpc.data.round_id,
     });
-    return { state: rpc.data, source: "rpc", errors };
+    const serverTimeMs = await resolveServerTimeMs(null);
+    return { state: rpc.data, source: "rpc", errors, serverTimeMs };
   }
 
   const rpcErr = rpc.error ?? "RPC sans données";
@@ -53,7 +66,12 @@ export async function runCrashLoopTick(): Promise<CrashLoopTickResult> {
     });
 
     const rawText = await res.text();
-    let body: { state?: unknown; error?: string | null; source?: string } = {};
+    let body: {
+      state?: unknown;
+      error?: string | null;
+      source?: string;
+      serverTime?: number;
+    } = {};
     try {
       body = rawText ? (JSON.parse(rawText) as typeof body) : {};
     } catch {
@@ -81,7 +99,8 @@ export async function runCrashLoopTick(): Promise<CrashLoopTickResult> {
             apiSource: body.source,
           });
         }
-        return { state: fromApi, source: "api", errors };
+        const serverTimeMs = await resolveServerTimeMs(body.serverTime);
+        return { state: fromApi, source: "api", errors, serverTimeMs };
       }
 
       errors.push("API /api/crash/loop: état invalide dans la réponse");
@@ -102,7 +121,8 @@ export async function runCrashLoopTick(): Promise<CrashLoopTickResult> {
       phase: table.data.phase,
       tableError: table.error,
     });
-    return { state: table.data, source: "table", errors };
+    const serverTimeMs = await resolveServerTimeMs(null);
+    return { state: table.data, source: "table", errors, serverTimeMs };
   }
 
   if (table.error) {
@@ -110,7 +130,8 @@ export async function runCrashLoopTick(): Promise<CrashLoopTickResult> {
     logCrashTick("error", "Lecture table impossible", table.error);
   }
 
-  return { state: null, source: "none", errors };
+  const serverTimeMs = await resolveServerTimeMs(null);
+  return { state: null, source: "none", errors, serverTimeMs };
 }
 
 /** @deprecated Utiliser runCrashLoopTick */

@@ -8,6 +8,7 @@ import type { CrashBetRow, CrashPublicState } from "@/utils/crash/types";
 type CrashBetInsert = Database["public"]["Tables"]["crash_bets"]["Insert"];
 
 import { CRASH_BETTING_SECONDS } from "@/utils/crash/constants";
+import { fetchSupabaseNowMs } from "@/utils/crash/supabase-clock";
 
 export const CRASH_CHANNEL = "crash:global";
 export { CRASH_BETTING_SECONDS };
@@ -15,6 +16,13 @@ export { CRASH_BETTING_SECONDS };
 type RpcResult<T> = { data: T | null; error: string | null };
 
 /** Lecture directe de la table (fiable si le cache RPC PostgREST est en retard). */
+/** Horloge Postgres (crash_server_now) pour synchroniser l'UI client. */
+export async function fetchCrashServerNowMs(): Promise<number | null> {
+  const supabase = createClient();
+  if (!supabase) return null;
+  return fetchSupabaseNowMs(supabase);
+}
+
 export async function fetchCrashStateFromTable(): Promise<
   RpcResult<CrashPublicState>
 > {

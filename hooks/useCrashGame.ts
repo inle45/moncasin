@@ -9,6 +9,7 @@ import {
   CRASH_BET_OPTIONS,
   DEFAULT_CRASH_BET,
 } from "@/utils/crash/constants";
+import { computeClockOffsetMs, syncedNowMs } from "@/utils/crash/client-clock";
 import { deriveVisualState } from "@/utils/crash/visual-state";
 import { normalizeRoundId } from "@/utils/crash/uuid";
 import { liveStateRowToPublic } from "@/utils/crash/live-state";
@@ -24,6 +25,7 @@ import {
   CRASH_CHANNEL,
   cashoutCrash,
   fetchCrashHistory,
+  fetchCrashServerNowMs,
   fetchCrashState,
   fetchCrashStateFromTable,
   fetchRoundBets,
@@ -49,6 +51,18 @@ export function useCrashGame() {
   const lastRealtimeAtRef = useRef(0);
   const lastCurveMRef = useRef(1);
   const lastKnownStateRef = useRef<CrashPublicState | null>(null);
+  /** offset = serverTimeMs - Date.now() à la dernière sync (horloge Supabase). */
+  const clockOffsetRef = useRef(0);
+
+  const syncClockFromServer = useCallback((serverTimeMs: number | null | undefined) => {
+    if (serverTimeMs == null || !Number.isFinite(serverTimeMs)) return;
+    clockOffsetRef.current = computeClockOffsetMs(serverTimeMs);
+  }, []);
+
+  const nowSynced = useCallback(
+    () => syncedNowMs(clockOffsetRef.current),
+    []
+  );
 
   const [serverState, setServerState] = useState<CrashPublicState | null>(null);
   const [useFallback, setUseFallback] = useState(!isSupabaseConfigured());
@@ -121,15 +135,19 @@ export function useCrashGame() {
   }, []);
 
   const refreshServerState = useCallback(async () => {
-    const { data, error } = await fetchCrashStateFromTable();
-    if (data) {
-      applyServerState(data);
-      await reloadBets(data.round_id);
-      return data;
+    const [table, serverNow] = await Promise.all([
+      fetchCrashStateFromTable(),
+      fetchCrashServerNowMs(),
+    ]);
+    syncClockFromServer(serverNow);
+    if (table.data) {
+      applyServerState(table.data);
+      await reloadBets(table.data.round_id);
+      return table.data;
     }
-    if (error) setProfileError(error);
+    if (table.error) setProfileError(table.error);
     return null;
-  }, [applyServerState, reloadBets]);
+  }, [applyServerState, reloadBets, syncClockFromServer]);
 
   const bootstrap = useCallback(async () => {
     if (!isSupabaseConfigured() || isDemoMode()) {
@@ -139,10 +157,12 @@ export function useCrashGame() {
     }
 
     setIsSyncing(true);
-    const [{ data: state, error }, { points }] = await Promise.all([
+    const [{ data: state, error }, { points }, serverNow] = await Promise.all([
       fetchCrashState(),
       fetchCrashHistory(12),
+      fetchCrashServerNowMs(),
     ]);
+    syncClockFromServer(serverNow);
 
     if (points.length) setCrashHistory(points);
 
@@ -151,6 +171,7 @@ export function useCrashGame() {
       await reloadBets(state.round_id);
     } else if (state) {
       const tick = await runCrashLoopTick();
+      syncClockFromServer(tick.serverTimeMs);
       if (tick.errors.length) setTickError(tick.errors.join(" · "));
       if (tick.state?.round_id) {
         applyServerState(tick.state);
@@ -165,7 +186,7 @@ export function useCrashGame() {
     }
 
     setIsSyncing(false);
-  }, [applyServerState, reloadBets, refreshServerState]);
+  }, [applyServerState, reloadBets, refreshServerState, syncClockFromServer]);
 
   // Session + solde : affichage local immédiat, sync via onAuthStateChange
   useEffect(() => {
@@ -346,6 +367,7 @@ export function useCrashGame() {
         }
 
         const tick = await runCrashLoopTick();
+        syncClockFromServer(tick.serverTimeMs);
         if (tick.errors.length) {
           setTickError(tick.errors.slice(0, 2).join(" · "));
         } else {
@@ -360,7 +382,7 @@ export function useCrashGame() {
     void runTick();
     const id = setInterval(() => void runTick(), LOOP_TICK_MS);
     return () => clearInterval(id);
-  }, [applyServerState, refreshServerState]);
+  }, [applyServerState, refreshServerState, syncClockFromServer]);
 
   // Rafraîchissement visuel 50ms (serveur dérivé ou simulateur local)
   useEffect(() => {
@@ -396,7 +418,7 @@ export function useCrashGame() {
         serverStateRef.current ?? lastKnownStateRef.current;
       if (!state) return;
 
-      const visual = deriveVisualState(state, Date.now());
+      const visual = deriveVisualState(state, nowSynced());
 
       setPhase(visual.phase);
       setMultiplier(visual.multiplier);
@@ -425,7 +447,7 @@ export function useCrashGame() {
     }, VISUAL_TICK_MS);
 
     return () => clearInterval(id);
-  }, [useFallback]);
+  }, [useFallback, nowSynced]);
 
   const placeBet = useCallback(async () => {
     if (phase !== "betting" || (bettingSecondsLeft ?? 0) <= 0) return;
@@ -490,8 +512,16 @@ export function useCrashGame() {
       serverStateRef.current?.round_id ||
       serverState?.round_id ||
       "";
+    const serverNow = await fetchCrashServerNowMs();
+    syncClockFromServer(serverNow);
+
+    const liveState = serverStateRef.current ?? lastKnownStateRef.current;
+    const cashoutMultiplier = liveState
+      ? deriveVisualState(liveState, nowSynced()).multiplier
+      : multiplier;
+
     const { ok, balance: newBal, payout, error } = await cashoutCrash(
-      multiplier,
+      cashoutMultiplier,
       roundId
     );
     if (ok) {
@@ -505,7 +535,16 @@ export function useCrashGame() {
       setMessage(error ?? "Cashout impossible");
     }
     window.setTimeout(() => setMessage(null), 2000);
-  }, [phase, hasPlacedBet, hasCashedOut, multiplier, setBalanceTracked, reloadBets]);
+  }, [
+    phase,
+    hasPlacedBet,
+    hasCashedOut,
+    multiplier,
+    nowSynced,
+    syncClockFromServer,
+    setBalanceTracked,
+    reloadBets,
+  ]);
 
   const changeBet = useCallback(
     (delta: number) => {
@@ -557,7 +596,7 @@ export function useCrashGame() {
       useFallback ||
       (hasLiveRound &&
         serverState !== null &&
-        !deriveVisualState(serverState, Date.now()).awaitingServerSync),
+        !deriveVisualState(serverState, nowSynced()).awaitingServerSync),
     roundBets,
     presence: [],
     activePlayersCount: Math.max(activePlayersCount, roundBets.length > 0 ? roundBets.length : 0),
