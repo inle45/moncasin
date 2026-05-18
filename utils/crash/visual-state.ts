@@ -82,21 +82,62 @@ export function deriveVisualState(
   };
 }
 
-export function serverStateNeedsAdvance(
+/**
+ * La boucle serveur doit appeler `crash_advance_tick` (horloge Postgres).
+ * En phase flying, seule la RPC décide du crash (multiplicateur vs crash_point).
+ */
+export function serverStateNeedsRpcTick(
   state: CrashPublicState,
-  now = Date.now()
+  nowMs: number
 ): boolean {
   const bettingEnd = parseIsoMs(state.betting_ends_at);
   const crashedAt = parseIsoMs(state.crashed_at);
 
   if (state.phase === "betting") {
-    return bettingEnd === null || now >= bettingEnd;
+    return bettingEnd === null || nowMs >= bettingEnd;
   }
   if (state.phase === "flying") {
     return true;
   }
   if (state.phase === "crashed") {
-    return crashedAt === null || now >= crashedAt + CRASH_DISPLAY_MS;
+    return crashedAt === null || nowMs >= crashedAt + CRASH_DISPLAY_MS;
   }
   return true;
+}
+
+/** Fallback UPDATE direct uniquement si les mises sont terminées mais phase encore betting. */
+export function serverStateNeedsDirectBettingFallback(
+  state: CrashPublicState,
+  nowMs: number
+): boolean {
+  if (state.phase !== "betting") return false;
+  const bettingEnd = parseIsoMs(state.betting_ends_at);
+  return bettingEnd === null || nowMs >= bettingEnd;
+}
+
+/** Manche bloquée côté API (pas le vol normal en flying). */
+export function serverStateStuck(
+  state: CrashPublicState,
+  nowMs: number
+): boolean {
+  if (state.phase === "flying") return false;
+
+  const bettingEnd = parseIsoMs(state.betting_ends_at);
+  const crashedAt = parseIsoMs(state.crashed_at);
+
+  if (state.phase === "betting") {
+    return bettingEnd !== null && nowMs >= bettingEnd;
+  }
+  if (state.phase === "crashed") {
+    return crashedAt !== null && nowMs >= crashedAt + CRASH_DISPLAY_MS;
+  }
+  return false;
+}
+
+/** @deprecated Utiliser serverStateNeedsRpcTick ou serverStateStuck */
+export function serverStateNeedsAdvance(
+  state: CrashPublicState,
+  nowMs = Date.now()
+): boolean {
+  return serverStateStuck(state, nowMs) || serverStateNeedsRpcTick(state, nowMs);
 }

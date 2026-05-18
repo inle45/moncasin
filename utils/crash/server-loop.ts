@@ -1,14 +1,17 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { createFallbackCrashState } from "@/utils/crash/default-state";
-import { parseIsoMs } from "@/utils/crash/datetime";
 import { parseCrashState } from "@/utils/crash/parse-state";
-import { serverStateNeedsAdvance } from "@/utils/crash/visual-state";
+import { fetchSupabaseNowMs } from "@/utils/crash/supabase-clock";
+import {
+  serverStateNeedsDirectBettingFallback,
+  serverStateNeedsRpcTick,
+  serverStateStuck,
+} from "@/utils/crash/visual-state";
 import type { CrashBetRow, CrashPublicState } from "@/utils/crash/types";
 import type { Database } from "@/utils/supabase/database.types";
 import { createCrashLoopClient } from "@/utils/supabase/crash-server";
 
 export const CRASH_LOOP_MAX_STEPS = 16;
-const CRASH_DISPLAY_MS = 3000;
 
 export interface CrashTickStepLog {
   step: number;
@@ -51,7 +54,8 @@ function logStep(
   phaseBefore: string | null,
   phaseAfter: string | null,
   error: string | null,
-  bettingEndsAt: string | null
+  bettingEndsAt: string | null,
+  serverNowIso: string
 ) {
   tickLog.push({
     step,
@@ -60,18 +64,28 @@ function logStep(
     phaseAfter,
     error,
     bettingEndsAt,
-    serverNow: new Date().toISOString(),
+    serverNow: serverNowIso,
   });
 }
 
 async function rpcRepair(
   supabase: SupabaseClient<Database>,
   tickLog: CrashTickStepLog[],
-  step: number
+  step: number,
+  serverNowIso: string
 ): Promise<void> {
   const { error } = await supabase.rpc("crash_repair_live_state");
   if (error) {
-    logStep(tickLog, step, "crash_repair_live_state", null, null, error.message, null);
+    logStep(
+      tickLog,
+      step,
+      "crash_repair_live_state",
+      null,
+      null,
+      error.message,
+      null,
+      serverNowIso
+    );
   }
 }
 
@@ -112,102 +126,101 @@ async function rpcAdvanceTick(
 }
 
 /**
- * Secours si la RPC ne mute pas la ligne (RLS, cache, ancienne fonction SQL).
- * Nécessite service_role (bypass RLS).
+ * Secours betting → flying uniquement. Pas de timestamps Node :
+ * `crash_repair_live_state` pose `flying_started_at = now()` côté Postgres.
  */
-async function directAdvanceRow(
-  supabase: SupabaseClient<Database>,
-  state: CrashPublicState,
-  now = Date.now()
+async function directStartFlying(
+  supabase: SupabaseClient<Database>
 ): Promise<{ ok: boolean; error: string | null }> {
-  const bettingEnd = parseIsoMs(state.betting_ends_at);
-  const crashedAt = parseIsoMs(state.crashed_at);
-  const iso = new Date(now).toISOString();
+  const { data, error } = await supabase
+    .from("crash_live_state")
+    .update({ phase: "flying" })
+    .eq("id", 1)
+    .eq("phase", "betting")
+    .select("phase")
+    .maybeSingle();
 
-  if (state.phase === "betting" && bettingEnd !== null && now >= bettingEnd) {
-    const { data, error } = await supabase
-      .from("crash_live_state")
-      .update({
-        phase: "flying",
-        flying_started_at: iso,
-        updated_at: iso,
-      })
-      .eq("id", 1)
-      .eq("phase", "betting")
-      .select("phase")
-      .maybeSingle();
-
-    if (error) return { ok: false, error: `UPDATE → flying: ${error.message}` };
-    if (!data) {
-      return {
-        ok: false,
-        error: "UPDATE → flying: 0 ligne modifiée (phase déjà changée ou bloquée)",
-      };
-    }
-    return { ok: true, error: null };
+  if (error) return { ok: false, error: `UPDATE → flying: ${error.message}` };
+  if (!data) {
+    return {
+      ok: false,
+      error: "UPDATE → flying: 0 ligne modifiée (phase déjà changée ou bloquée)",
+    };
   }
 
-  if (state.phase === "flying") {
-    const { data, error } = await supabase
-      .from("crash_live_state")
-      .update({
-        phase: "crashed",
-        crashed_at: iso,
-        updated_at: iso,
-      })
-      .eq("id", 1)
-      .eq("phase", "flying")
-      .select("phase")
-      .maybeSingle();
-
-    if (error) return { ok: false, error: `UPDATE → crashed: ${error.message}` };
-    if (!data) {
-      return {
-        ok: false,
-        error: "UPDATE → crashed: 0 ligne (multiplicateur pas encore au crash_point — normal)",
-      };
-    }
-    return { ok: true, error: null };
-  }
-
-  if (
-    state.phase === "crashed" &&
-    crashedAt !== null &&
-    now >= crashedAt + CRASH_DISPLAY_MS
-  ) {
-    const { error } = await supabase.rpc("crash_advance_tick");
-    if (!error) return { ok: true, error: null };
-    return { ok: false, error: `RPC new round: ${error.message}` };
-  }
-
-  return { ok: false, error: "directAdvanceRow: rien à faire" };
+  await supabase.rpc("crash_repair_live_state");
+  return { ok: true, error: null };
 }
 
 export async function syncCrashLoop(
   supabase: SupabaseClient<Database>,
   maxSteps = CRASH_LOOP_MAX_STEPS
-): Promise<{ state: CrashPublicState; tickLog: CrashTickStepLog[]; lastError: string | null }> {
+): Promise<{
+  state: CrashPublicState;
+  tickLog: CrashTickStepLog[];
+  lastError: string | null;
+  serverTimeMs: number;
+}> {
   const tickLog: CrashTickStepLog[] = [];
   let lastError: string | null = null;
   let step = 0;
 
-  await rpcRepair(supabase, tickLog, ++step);
+  const supabaseNowMs = await fetchSupabaseNowMs(supabase);
+  const serverTimeMs = supabaseNowMs ?? Date.now();
+  const serverNowIso = new Date(serverTimeMs).toISOString();
+
+  if (supabaseNowMs === null) {
+    lastError =
+      "RPC crash_server_now absente — exécuter supabase/crash-server-now.sql (comparaisons horaires approximatives)";
+    logStep(tickLog, ++step, "crash_server_now", null, null, lastError, null, serverNowIso);
+  } else {
+    logStep(
+      tickLog,
+      ++step,
+      "crash_server_now",
+      null,
+      null,
+      null,
+      null,
+      serverNowIso
+    );
+  }
+
+  await rpcRepair(supabase, tickLog, ++step, serverNowIso);
 
   let state: CrashPublicState | null = null;
 
   try {
     state = await readStateDirect(supabase);
-    logStep(tickLog, ++step, "read table", null, state?.phase ?? null, null, state?.betting_ends_at ?? null);
+    logStep(
+      tickLog,
+      ++step,
+      "read table",
+      null,
+      state?.phase ?? null,
+      null,
+      state?.betting_ends_at ?? null,
+      serverNowIso
+    );
   } catch (err) {
     lastError = err instanceof Error ? err.message : String(err);
-    logStep(tickLog, ++step, "read table", null, null, lastError, null);
+    logStep(tickLog, ++step, "read table", null, null, lastError, null, serverNowIso);
   }
 
   if (!state) {
     const { data, error } = await supabase.rpc("crash_get_state");
     if (error) {
       lastError = error.message;
-      logStep(tickLog, ++step, "crash_get_state", null, null, error.message, null);
+      logStep(
+        tickLog,
+        ++step,
+        "crash_get_state",
+        null,
+        null,
+        error.message,
+        null,
+        serverNowIso
+      );
     } else {
       state = parseCrashState(data);
       logStep(
@@ -217,21 +230,23 @@ export async function syncCrashLoop(
         null,
         state?.phase ?? null,
         state ? null : "état RPC invalide",
-        state?.betting_ends_at ?? null
+        state?.betting_ends_at ?? null,
+        serverNowIso
       );
     }
   }
 
   if (!state) {
     return {
-      state: createFallbackCrashState(),
+      state: createFallbackCrashState(serverTimeMs),
       tickLog,
       lastError: lastError ?? "crash_live_state introuvable",
+      serverTimeMs,
     };
   }
 
   for (let i = 0; i < maxSteps; i++) {
-    if (!serverStateNeedsAdvance(state, Date.now())) break;
+    if (!serverStateNeedsRpcTick(state, serverTimeMs)) break;
 
     const phaseBefore = state.phase;
     const { state: afterRpc, rpcError } = await rpcAdvanceTick(supabase);
@@ -245,7 +260,8 @@ export async function syncCrashLoop(
         phaseBefore,
         afterRpc?.phase ?? null,
         rpcError,
-        state.betting_ends_at
+        state.betting_ends_at,
+        serverNowIso
       );
     } else if (afterRpc) {
       logStep(
@@ -255,7 +271,8 @@ export async function syncCrashLoop(
         phaseBefore,
         afterRpc.phase,
         null,
-        afterRpc.betting_ends_at
+        afterRpc.betting_ends_at,
+        serverNowIso
       );
       state = afterRpc;
     }
@@ -279,28 +296,30 @@ export async function syncCrashLoop(
           state.phase,
           tableState.phase,
           null,
-          tableState.betting_ends_at
+          tableState.betting_ends_at,
+          serverNowIso
         );
         state = tableState;
       }
     }
 
-    if (!serverStateNeedsAdvance(state, Date.now())) continue;
+    if (!serverStateNeedsRpcTick(state, serverTimeMs)) continue;
 
-    const direct = await directAdvanceRow(supabase, state);
+    if (!serverStateNeedsDirectBettingFallback(state, serverTimeMs)) continue;
+
+    const direct = await directStartFlying(supabase);
     logStep(
       tickLog,
       ++step,
-      "direct UPDATE fallback",
+      "direct UPDATE betting→flying",
       state.phase,
-      direct.ok ? "mutated" : state.phase,
+      direct.ok ? "flying" : state.phase,
       direct.error,
-      state.betting_ends_at
+      state.betting_ends_at,
+      serverNowIso
     );
 
-    if (direct.error && direct.error.includes("0 ligne")) {
-      /* multiplicateur pas atteint en flying — pas fatal */
-    } else if (direct.error) {
+    if (direct.error && !direct.error.includes("0 ligne")) {
       lastError = direct.error;
     }
 
@@ -314,14 +333,18 @@ export async function syncCrashLoop(
           "read after direct",
           phaseBefore,
           afterDirect.phase,
-          progressed ? null : "phase inchangée après direct",
-          afterDirect.betting_ends_at
+          progressed ? null : "phase inchangée après direct betting→flying",
+          afterDirect.betting_ends_at,
+          serverNowIso
         );
         state = afterDirect;
-        if (!progressed && serverStateNeedsAdvance(state, Date.now())) {
+        if (
+          !progressed &&
+          serverStateNeedsDirectBettingFallback(state, serverTimeMs)
+        ) {
           lastError =
             lastError ??
-            `Manche bloquée: phase=${state.phase}, betting_ends_at=${state.betting_ends_at}, now=${new Date().toISOString()}`;
+            `Manche bloquée en betting: betting_ends_at=${state.betting_ends_at}, server_now=${serverNowIso}`;
           break;
         }
       }
@@ -329,14 +352,18 @@ export async function syncCrashLoop(
       lastError = err instanceof Error ? err.message : String(err);
     }
 
-    if (afterRpc && afterRpc.phase === phaseBefore && serverStateNeedsAdvance(state)) {
+    if (
+      afterRpc &&
+      afterRpc.phase === phaseBefore &&
+      serverStateNeedsDirectBettingFallback(state, serverTimeMs)
+    ) {
       lastError =
         lastError ??
-        "crash_advance_tick n'a pas changé la phase alors que la manche est expirée";
+        "crash_advance_tick n'a pas démarré le vol alors que betting_ends_at est dépassé";
     }
   }
 
-  return { state, tickLog, lastError };
+  return { state, tickLog, lastError, serverTimeMs };
 }
 
 async function fetchHistory(
@@ -370,7 +397,6 @@ async function fetchBets(
 export async function runCrashSnapshot(options?: {
   maxSteps?: number;
 }): Promise<CrashSnapshot> {
-  const serverTime = Date.now();
   const serviceRoleConfigured = Boolean(
     process.env.SUPABASE_SERVICE_ROLE_KEY?.trim()
   );
@@ -379,10 +405,10 @@ export async function runCrashSnapshot(options?: {
 
   if (!supabase) {
     return {
-      state: createFallbackCrashState(serverTime),
+      state: createFallbackCrashState(),
       history: [],
       bets: [],
-      serverTime,
+      serverTime: Date.now(),
       error: "Clés Supabase manquantes (SUPABASE_SERVICE_ROLE_KEY ou ANON)",
       source: "fallback",
       tickLog: [],
@@ -392,11 +418,12 @@ export async function runCrashSnapshot(options?: {
   }
 
   try {
-    const { state, tickLog, lastError } = await syncCrashLoop(
+    const { state, tickLog, lastError, serverTimeMs } = await syncCrashLoop(
       supabase,
       options?.maxSteps
     );
-    const needsAdvance = serverStateNeedsAdvance(state, serverTime);
+    const serverTime = serverTimeMs;
+    const needsAdvance = serverStateStuck(state, serverTime);
     const history = await fetchHistory(supabase);
     const bets = state.round_id ? await fetchBets(supabase, state.round_id) : [];
 
@@ -426,10 +453,10 @@ export async function runCrashSnapshot(options?: {
     console.error("[MonCasin /api/crash/loop] exception", message, err);
 
     return {
-      state: createFallbackCrashState(serverTime),
+      state: createFallbackCrashState(),
       history: [],
       bets: [],
-      serverTime,
+      serverTime: Date.now(),
       error: message,
       source: "fallback",
       tickLog: [],

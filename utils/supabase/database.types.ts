@@ -165,6 +165,10 @@ export interface Database {
         Args: Record<string, never>;
         Returns: Json;
       };
+      crash_server_now: {
+        Args: Record<string, never>;
+        Returns: string;
+      };
       crash_place_bet: {
         Args: { p_amount: number };
         Returns: Json;
