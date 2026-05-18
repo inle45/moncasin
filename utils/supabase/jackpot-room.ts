@@ -21,6 +21,8 @@ export type TriggerJackpotRollResult = {
   balance?: number;
   round?: JackpotRound;
   bets?: JackpotBetRow[];
+  /** Message SQL brut (`message` / `error` du jsonb). */
+  sqlMessage?: string;
   error: string | null;
   debug?: EnterJackpotArenaResult["debug"];
 };
@@ -335,26 +337,40 @@ export async function triggerJackpotRoll(): Promise<TriggerJackpotRollResult> {
     const parsed = parseJackpotRpcPayload(rawData);
 
     if (!parsed.ok) {
+      const sqlMessage = parsed.error ?? "Tirage refusé par le serveur";
       console.error("ERREUR CRITIQUE JACKPOT:", {
         type: "rpc_ok_false",
-        message: parsed.error,
+        sqlMessage,
         rawData,
       });
       return {
         ok: false,
-        error: parsed.error ?? "Tirage refusé par le serveur",
+        error: sqlMessage,
+        sqlMessage,
         debug: {
           step: "rpc_ok_false",
           rawData,
-          postgrestMessage: parsed.error ?? undefined,
+          postgrestMessage: sqlMessage,
         },
+      };
+    }
+
+    if (!parsed.round) {
+      const sqlMessage =
+        "RPC ok:true mais aucune manche parsable — vérifie le champ round et status dans la réponse JSON.";
+      console.error("ERREUR CRITIQUE JACKPOT:", { sqlMessage, rawData });
+      return {
+        ok: false,
+        error: sqlMessage,
+        sqlMessage,
+        debug: { step: "missing_round", rawData, postgrestMessage: sqlMessage },
       };
     }
 
     return {
       ok: true,
       balance: parsed.balance ?? undefined,
-      round: parsed.round ?? undefined,
+      round: parsed.round,
       bets: parsed.bets.length > 0 ? parsed.bets : undefined,
       error: null,
       debug: { step: "success", rawData },

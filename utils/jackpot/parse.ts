@@ -8,6 +8,51 @@ const STATUSES: JackpotRoundStatus[] = [
   "ended",
 ];
 
+const STATUS_ALIASES: Record<string, JackpotRoundStatus> = {
+  waiting: "waiting",
+  counting: "counting",
+  countdown: "counting",
+  rolling: "rolling",
+  roll: "rolling",
+  ended: "ended",
+  finished: "ended",
+  complete: "ended",
+};
+
+/** Message d'échec renvoyé par les RPC SQL (`{ ok: false, message: '...' }`). */
+export function extractJackpotRpcErrorMessage(
+  obj: Record<string, unknown>
+): string {
+  const parts: string[] = [];
+  for (const key of [
+    "message",
+    "error",
+    "msg",
+    "reason",
+    "detail",
+    "details",
+    "hint",
+  ]) {
+    const v = obj[key];
+    if (v != null && String(v).trim() !== "") {
+      parts.push(String(v).trim());
+    }
+  }
+  return parts.length > 0 ? parts.join(" · ") : "Action refusée par le serveur";
+}
+
+function normalizeRoundStatus(raw: unknown): JackpotRoundStatus | null {
+  const key = String(raw ?? "waiting")
+    .trim()
+    .toLowerCase();
+  const mapped = STATUS_ALIASES[key];
+  if (mapped) return mapped;
+  if (STATUSES.includes(key as JackpotRoundStatus)) {
+    return key as JackpotRoundStatus;
+  }
+  return null;
+}
+
 function pickString(row: Record<string, unknown>, ...keys: string[]): string | null {
   for (const key of keys) {
     const v = row[key];
@@ -28,8 +73,11 @@ export function parseJackpotRound(row: Record<string, unknown>): JackpotRound | 
   const id = String(row.id ?? "");
   if (!id) return null;
 
-  const status = String(row.status ?? "waiting") as JackpotRoundStatus;
-  if (!STATUSES.includes(status)) return null;
+  const status = normalizeRoundStatus(row.status);
+  if (!status) {
+    console.warn("[Jackpot] Statut round inconnu:", row.status, row);
+    return null;
+  }
 
   return {
     id,
@@ -127,7 +175,7 @@ export function parseJackpotRpcPayload(data: unknown): {
     if (!isRpcOk(obj.ok)) {
       return {
         ok: false,
-        error: String(obj.error ?? obj.message ?? "Action refusée"),
+        error: extractJackpotRpcErrorMessage(obj),
         balance: null,
         round: null,
         bet: null,
@@ -139,14 +187,31 @@ export function parseJackpotRpcPayload(data: unknown): {
     const betRaw = obj.bet ?? obj.jackpot_bet;
     const bets = parseJackpotBetsList(obj);
 
+    const round =
+      roundRaw && typeof roundRaw === "object"
+        ? parseJackpotRound(roundRaw as Record<string, unknown>)
+        : null;
+
+    if (roundRaw && !round) {
+      const rawStatus =
+        typeof roundRaw === "object" && roundRaw && "status" in roundRaw
+          ? String((roundRaw as Record<string, unknown>).status)
+          : "?";
+      return {
+        ok: false,
+        error: `Manche renvoyée mais statut illisible pour l'UI (« ${rawStatus} »). Attendu: waiting | counting | rolling | ended. Colonnes utiles: winner_id, winning_ticket, rolling_started_at, ended_at.`,
+        balance: null,
+        round: null,
+        bet: null,
+        bets: [],
+      };
+    }
+
     return {
       ok: true,
       error: null,
       balance: obj.balance != null ? Number(obj.balance) : null,
-      round:
-        roundRaw && typeof roundRaw === "object"
-          ? parseJackpotRound(roundRaw as Record<string, unknown>)
-          : null,
+      round,
       bet:
         betRaw && typeof betRaw === "object"
           ? parseJackpotBet(betRaw as Record<string, unknown>)

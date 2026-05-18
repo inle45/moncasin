@@ -49,11 +49,41 @@ function mergeBet(
 
 function formatRollError(
   error: string | null,
-  debug?: { postgrestCode?: string; postgrestHint?: string }
+  sqlMessage?: string | null,
+  debug?: {
+    postgrestCode?: string;
+    postgrestHint?: string;
+    postgrestMessage?: string;
+    rawData?: unknown;
+    step?: string;
+  }
 ): string {
+  const primary =
+    sqlMessage?.trim() ||
+    error?.trim() ||
+    debug?.postgrestMessage?.trim() ||
+    "Tirage impossible (aucun détail serveur)";
+
   const code = debug?.postgrestCode ? ` [${debug.postgrestCode}]` : "";
   const hint = debug?.postgrestHint ? ` — ${debug.postgrestHint}` : "";
-  return `${error ?? "Tirage impossible"}${code}${hint}`;
+  const step = debug?.step ? ` (${debug.step})` : "";
+
+  let rawSnippet = "";
+  if (debug?.rawData != null) {
+    try {
+      const raw =
+        typeof debug.rawData === "string"
+          ? debug.rawData
+          : JSON.stringify(debug.rawData);
+      if (raw && raw !== "{}") {
+        rawSnippet = ` · Réponse: ${raw.length > 280 ? `${raw.slice(0, 280)}…` : raw}`;
+      }
+    } catch {
+      rawSnippet = ` · Réponse: ${String(debug.rawData).slice(0, 200)}`;
+    }
+  }
+
+  return `${primary}${code}${hint}${step}${rawSnippet}`;
 }
 
 export function useJackpotArena() {
@@ -66,6 +96,7 @@ export function useJackpotArena() {
   const rollTriggeredForRoundRef = useRef<string | null>(null);
   const triggeringRollRef = useRef(false);
   const stuckRollSinceRef = useRef<number | null>(null);
+  const lastTriggerErrorRef = useRef<string | null>(null);
 
   const [round, setRound] = useState<JackpotRound | null>(null);
   const [bets, setBets] = useState<JackpotBetRow[]>([]);
@@ -344,7 +375,9 @@ export function useJackpotArena() {
       }
 
       setCriticalError(
-        "Tirage en attente — resynchronisation de l'arène en cours…"
+        lastTriggerErrorRef.current
+          ? `Tirage bloqué — ${lastTriggerErrorRef.current}`
+          : "Tirage en attente — resynchronisation de l'arène (aucun détail RPC reçu)…"
       );
       rollTriggeredForRoundRef.current = null;
       void refreshState();
@@ -387,6 +420,7 @@ export function useJackpotArena() {
         }
 
         setCriticalError(null);
+        lastTriggerErrorRef.current = null;
         const result = await triggerJackpotRoll();
 
         if (result.ok && result.round) {
@@ -403,11 +437,33 @@ export function useJackpotArena() {
             await syncBalance();
           }
           setCriticalError(null);
+          lastTriggerErrorRef.current = null;
+        } else if (result.ok) {
+          await refreshState();
+          const after = roundRef.current;
+          if (after?.status === "rolling" || after?.status === "ended") {
+            setCriticalError(null);
+            lastTriggerErrorRef.current = null;
+          } else {
+            const errMsg = formatRollError(
+              result.error,
+              result.sqlMessage,
+              result.debug
+            );
+            lastTriggerErrorRef.current = errMsg;
+            setCriticalError(errMsg);
+          }
         } else {
-          const errMsg = formatRollError(result.error, result.debug);
+          const errMsg = formatRollError(
+            result.error,
+            result.sqlMessage,
+            result.debug
+          );
+          lastTriggerErrorRef.current = errMsg;
           setCriticalError(errMsg);
           console.error("ERREUR CRITIQUE JACKPOT:", {
             error: result.error,
+            sqlMessage: result.sqlMessage,
             debug: result.debug,
             roundId: current.id,
             playerCount,

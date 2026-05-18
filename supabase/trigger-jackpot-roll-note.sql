@@ -21,3 +21,16 @@
 -- Sinon le front voit pot OK (round) mais 0 gladiateur (mises invisibles).
 --
 -- Les mises doivent avoir le même round_id que la manche active (jackpot_active_round_id).
+--
+-- Réponse trigger_jackpot_roll en échec (affichée telle quelle dans la bannière rouge) :
+--   { "ok": false, "message": "texte SQL exact" }
+--   ou "error" (les deux sont lus par le front).
+--
+-- Réponse succès attendue par le front :
+--   { "ok": true, "round": { "status": "rolling", "winner_id": uuid, "winning_ticket": bigint, ... } }
+-- Statuts UI : waiting | counting | rolling | ended (minuscules).
+--
+-- Colonnes round utilisées par l'UI (non obligatoires toutes à rolling) :
+--   rolling : status, winner_id (recommandé), winning_ticket (optionnel), rolling_started_at
+--   ended   : + winner_payout, ended_at, tax_pool
+-- Le front ne valide PAS ended immédiatement : jackpot_advance_tick ou SQL gère rolling → ended ~4s après.
