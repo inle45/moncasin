@@ -63,7 +63,8 @@ function formatPostgrestError(err: PostgrestErrorShape): string {
   return parts.join(" · ");
 }
 
-const ACTIVE_ROUND_STATUSES = ["counting", "rolling", "waiting"] as const;
+/** rolling en premier pour ne pas écraser l'animation par une autre manche en counting. */
+const ACTIVE_ROUND_STATUSES = ["rolling", "counting", "waiting"] as const;
 
 /** Manche en cours (aligné sur jackpot_active_round_id : counting > rolling > waiting). */
 export async function fetchActiveJackpotRound(): Promise<

@@ -115,6 +115,7 @@ export default function JackpotPage() {
         <JackpotPotBar totalPot={round?.total_pot ?? 0} segments={segments} />
 
         <JackpotRollStrip
+          key={`roll-${round?.id ?? "none"}-${roundStatus}-${round?.winner_id ?? ""}`}
           active={roundStatus === "rolling"}
           bets={bets}
           winnerId={round?.winner_id ?? null}

@@ -144,8 +144,11 @@ export function useJackpotArena() {
 
     if (next.status === "rolling" || next.status === "ended") {
       rollTriggeredForRoundRef.current = next.id;
+      triggeringRollRef.current = false;
       setCriticalError(null);
+      setCountdownSeconds(null);
       stuckRollSinceRef.current = null;
+      lastTriggerErrorRef.current = null;
     }
 
     if (next.status === "ended" && prevStatus !== "ended") {
@@ -153,8 +156,13 @@ export function useJackpotArena() {
       window.setTimeout(() => setShowWinnerFlash(false), JACKPOT_ENDED_DISPLAY_MS);
     }
 
-    roundRef.current = next;
-    setRound(next);
+    const merged: JackpotRound =
+      roundRef.current?.id === next.id
+        ? { ...roundRef.current, ...next }
+        : next;
+
+    roundRef.current = merged;
+    setRound(merged);
   }, []);
 
   const reloadBets = useCallback(
@@ -220,6 +228,20 @@ export function useJackpotArena() {
     void bootstrap();
   }, [bootstrap]);
 
+  /** Rafraîchit l'état au retour sur l'onglet (cache mobile / PWA). */
+  useEffect(() => {
+    if (!isSupabaseConfigured() || isDemoMode()) return;
+
+    const onVisible = () => {
+      if (document.visibilityState === "visible") {
+        void refreshState();
+      }
+    };
+
+    document.addEventListener("visibilitychange", onVisible);
+    return () => document.removeEventListener("visibilitychange", onVisible);
+  }, [refreshState]);
+
   useEffect(() => {
     if (!isSupabaseConfigured() || isDemoMode()) return;
 
@@ -249,6 +271,12 @@ export function useJackpotArena() {
           }
 
           applyRound(parsed);
+
+          if (parsed.status === "rolling") {
+            rollTriggeredForRoundRef.current = parsed.id;
+            triggeringRollRef.current = false;
+          }
+
           if (payload.eventType !== "DELETE") {
             void reloadBets(parsed.id);
           }
@@ -294,7 +322,10 @@ export function useJackpotArena() {
   useEffect(() => {
     if (!isSupabaseConfigured() || isDemoMode()) return;
 
-    const pollId = setInterval(() => void refreshState(), JACKPOT_STATE_POLL_MS);
+    const pollId = setInterval(() => {
+      if (roundRef.current?.status === "rolling") return;
+      void refreshState();
+    }, JACKPOT_STATE_POLL_MS);
 
     const runTick = async () => {
       if (advancingRef.current) return;
@@ -401,6 +432,14 @@ export function useJackpotArena() {
 
     void (async () => {
       try {
+        if (
+          roundRef.current?.id === current.id &&
+          (roundRef.current.status === "rolling" ||
+            roundRef.current.status === "ended")
+        ) {
+          return;
+        }
+
         const { count, error: betsError } = await reloadBets(current.id);
         const playerCount = count || aggregateBetsByUser(betsRef.current).length;
 
@@ -424,20 +463,29 @@ export function useJackpotArena() {
         const result = await triggerJackpotRoll(current.id);
 
         if (result.ok && result.round) {
-          applyRound(result.round);
+          applyRound({
+            ...current,
+            ...result.round,
+            status: "rolling",
+            id: result.round.id || current.id,
+          });
+
           if (result.bets?.length) {
             setBetsAggregated(result.bets);
-          } else {
-            await reloadBets(result.round.id);
           }
 
           if (result.balance != null) {
             setBalance(Math.floor(result.balance));
           } else if (result.round.winner_id === userIdRef.current) {
-            await syncBalance();
+            void syncBalance();
           }
+
           setCriticalError(null);
           lastTriggerErrorRef.current = null;
+
+          if (!result.bets?.length) {
+            void reloadBets(result.round.id);
+          }
         } else if (result.ok) {
           await refreshState();
           const after = roundRef.current;
@@ -473,6 +521,8 @@ export function useJackpotArena() {
           const after = roundRef.current;
           if (after?.status === "counting") {
             rollTriggeredForRoundRef.current = null;
+          } else if (after?.status === "rolling" || after?.status === "ended") {
+            applyRound(after);
           }
         }
       } catch (err) {
