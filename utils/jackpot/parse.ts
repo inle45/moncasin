@@ -1,3 +1,4 @@
+import { isRpcOk, unwrapRpcJson } from "@/utils/jackpot/unwrap-rpc";
 import type { JackpotBetRow, JackpotRound, JackpotRoundStatus } from "./types";
 
 const STATUSES: JackpotRoundStatus[] = [
@@ -79,13 +80,14 @@ export function parseJackpotRpcPayload(data: unknown): {
   round: JackpotRound | null;
   bet: JackpotBetRow | null;
 } {
-  if (data == null) {
+  const unwrapped = unwrapRpcJson(data);
+  if (unwrapped == null) {
     return { ok: false, error: "Réponse vide", balance: null, round: null, bet: null };
   }
 
-  if (typeof data === "object" && "ok" in (data as object)) {
-    const obj = data as Record<string, unknown>;
-    if (obj.ok === false) {
+  if (typeof unwrapped === "object" && "ok" in (unwrapped as object)) {
+    const obj = unwrapped as Record<string, unknown>;
+    if (!isRpcOk(obj.ok)) {
       return {
         ok: false,
         error: String(obj.error ?? obj.message ?? "Action refusée"),
@@ -113,8 +115,8 @@ export function parseJackpotRpcPayload(data: unknown): {
     };
   }
 
-  if (typeof data === "object") {
-    const asRound = parseJackpotRound(data as Record<string, unknown>);
+  if (typeof unwrapped === "object") {
+    const asRound = parseJackpotRound(unwrapped as Record<string, unknown>);
     if (asRound) {
       return { ok: true, error: null, balance: null, round: asRound, bet: null };
     }

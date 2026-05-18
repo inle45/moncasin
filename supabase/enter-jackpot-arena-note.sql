@@ -1,0 +1,11 @@
+-- Référence intégration client MonCasin
+-- Colonne solde joueur : public.profiles.balance (bigint)
+-- PAS wallet_balance, tokens, ni jetons.
+--
+-- Signature attendue par le front :
+--   enter_jackpot_arena(p_amount bigint)
+--   → utilise auth.uid() pour l'utilisateur
+--   → débite profiles.balance
+--
+-- Réponse JSON attendue :
+--   { "ok": true, "round": { ... }, "balance": 1234, "bet": { ... } }

@@ -102,10 +102,15 @@ export function useJackpotArena() {
 
   const refreshState = useCallback(async () => {
     const { data, error } = await fetchActiveJackpotRound();
-    if (error) return null;
+    if (error) {
+      console.warn("[MonCasin Jackpot] refreshState:", error);
+      return null;
+    }
     if (data) {
       applyRound(data);
       await reloadBets(data.id);
+    } else {
+      console.warn("[MonCasin Jackpot] Aucune manche jackpot_rounds trouvée");
     }
     return data;
   }, [applyRound, reloadBets]);
@@ -301,16 +306,23 @@ export function useJackpotArena() {
         else await syncBalance(uid);
         if (result.round) applyRound(result.round);
         if (result.bet) setBets((prev) => mergeBet(prev, result.bet!));
-        await reloadBets(result.round?.id);
+        await refreshState();
         setMessage(`Tu entres dans l'arène avec ${betAmount} jetons !`);
       } else {
-        setMessage(result.error ?? "Entrée refusée");
+        const detail = result.debug?.postgrestCode
+          ? ` (${result.debug.postgrestCode})`
+          : "";
+        const hint = result.debug?.postgrestHint
+          ? ` — ${result.debug.postgrestHint}`
+          : "";
+        setMessage(`${result.error ?? "Entrée refusée"}${detail}${hint}`);
+        console.error("[MonCasin Jackpot] enterArena échec:", result);
       }
-      window.setTimeout(() => setMessage(null), 2500);
+      window.setTimeout(() => setMessage(null), 5000);
     } finally {
       placingRef.current = false;
     }
-  }, [canBet, betAmount, applyRound, reloadBets, syncBalance]);
+  }, [canBet, betAmount, applyRound, refreshState, syncBalance]);
 
   return {
     round,

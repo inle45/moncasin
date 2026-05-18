@@ -290,13 +290,7 @@ export interface Database {
         Returns: Json;
       };
       enter_jackpot_arena: {
-        Args: {
-          p_user_id: string;
-          p_amount: number;
-          p_bet_amount?: number;
-          user_id?: string;
-          amount?: number;
-        };
+        Args: { p_amount: number };
         Returns: Json;
       };
       jackpot_advance_tick: {
