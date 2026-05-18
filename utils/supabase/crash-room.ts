@@ -237,11 +237,16 @@ export async function placeCrashBet(
   };
 }
 
+export type CrashCashoutOpts = {
+  betId?: string;
+  betSlot?: 0 | 1;
+};
+
 /** Cashout via UPDATE crash_bets + profiles (sans RPC). */
 export async function cashoutCrash(
   multiplier: number,
   roundId: string,
-  betId?: string
+  opts?: string | CrashCashoutOpts
 ): Promise<{
   ok: boolean;
   multiplier?: number;
@@ -266,6 +271,15 @@ export async function cashoutCrash(
     return { ok: false, error: "Non authentifié" };
   }
 
+  let betId: string | undefined;
+  let betSlot: 0 | 1 | undefined;
+  if (typeof opts === "string") {
+    betId = opts;
+  } else if (opts) {
+    betId = opts.betId;
+    betSlot = opts.betSlot;
+  }
+
   let betQuery = supabase
     .from("crash_bets")
     .select("id, bet_amount")
@@ -275,6 +289,8 @@ export async function cashoutCrash(
 
   if (betId) {
     betQuery = betQuery.eq("id", betId);
+  } else if (betSlot !== undefined) {
+    betQuery = betQuery.eq("bet_slot", betSlot);
   }
 
   const { data: activeBet, error: betError } = await betQuery.maybeSingle();

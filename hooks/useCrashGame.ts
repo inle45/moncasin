@@ -12,7 +12,7 @@ import {
 } from "@/utils/crash/client-clock";
 import {
   createDefaultBetSlots,
-  parseAutoCashoutTarget,
+  parseAutoCashoutFromInput,
   type CrashBetSlotIndex,
   type CrashBetSlotUI,
 } from "@/utils/crash/bet-slot";
@@ -57,12 +57,17 @@ export function useCrashGame() {
   const advancingRef = useRef(false);
   const placingBetRef = useRef(false);
   const autoCashoutInFlightRef = useRef<[boolean, boolean]>([false, false]);
+  /** Cible verrouillée à la mise (survit aux resync Realtime). */
+  const autoCashoutTargetRef = useRef<[number | null, number | null]>([
+    null,
+    null,
+  ]);
   const betSlotsRef = useRef<[CrashBetSlotUI, CrashBetSlotUI]>(createDefaultBetSlots());
   const phaseRef = useRef<CrashPhase>("betting");
-  const cashoutForSlotRef = useRef<
-    (slotIndex: CrashBetSlotIndex) => Promise<boolean>
+  const triggerCashoutRef = useRef<
+    (slotIndex: CrashBetSlotIndex, bruteMultiplier: number) => Promise<boolean>
   >(async () => false);
-  const checkAutoCashoutsRef = useRef<(currentMultiplier: number) => void>(
+  const evaluateAutoCashoutAtTickRef = useRef<(bruteMultiplier: number) => void>(
     () => {}
   );
   const prevPhaseRef = useRef<CrashPhase>("betting");
@@ -152,6 +157,7 @@ export function useCrashGame() {
       setCurvePoints([1]);
       setBetSlots(createDefaultBetSlots());
       autoCashoutInFlightRef.current = [false, false];
+      autoCashoutTargetRef.current = [null, null];
     } else if (state.round_id) {
       roundIdRef.current = state.round_id;
     }
@@ -171,12 +177,17 @@ export function useCrashGame() {
       .sort((a, b) => (a.bet_slot ?? 0) - (b.bet_slot ?? 0));
 
     setBetSlots((prev) => {
-      const next = createDefaultBetSlots();
-      next[0] = { ...prev[0], ...next[0] };
-      next[1] = { ...prev[1], ...next[1] };
+      const defaults = createDefaultBetSlots();
+      const next: [CrashBetSlotUI, CrashBetSlotUI] = [
+        { ...defaults[0], ...prev[0] },
+        { ...defaults[1], ...prev[1] },
+      ];
 
-      mine.forEach((row, idx) => {
-        const slot = Math.min(1, row.bet_slot ?? idx) as CrashBetSlotIndex;
+      mine.forEach((row) => {
+        const slot = Math.min(
+          1,
+          Math.max(0, row.bet_slot ?? 0)
+        ) as CrashBetSlotIndex;
         next[slot] = {
           ...next[slot],
           betAmount: row.bet_amount,
@@ -186,6 +197,20 @@ export function useCrashGame() {
           betId: row.id,
         };
       });
+
+      ([0, 1] as const).forEach((i) => {
+        const hasRow = mine.some((r) => (r.bet_slot ?? 0) === i);
+        if (!hasRow) {
+          next[i] = {
+            ...next[i],
+            hasPlacedBet: false,
+            hasCashedOut: false,
+            betId: null,
+            lockedBetAmount: 0,
+          };
+        }
+      });
+
       return next;
     });
   }, []);
@@ -261,6 +286,7 @@ export function useCrashGame() {
         setUserId(null);
         setBetSlots(createDefaultBetSlots());
         autoCashoutInFlightRef.current = [false, false];
+        autoCashoutTargetRef.current = [null, null];
         setProfileError(null);
         setBalanceTracked(INITIAL_BALANCE);
         return;
@@ -474,7 +500,7 @@ export function useCrashGame() {
         setRoundNumber(tick.roundNumber);
 
         if (tick.phase === "flying") {
-          checkAutoCashoutsRef.current(tick.multiplier);
+          evaluateAutoCashoutAtTickRef.current(tick.multiplier);
           setCurvePoints((pts) => {
             const next = [...pts, tick.multiplier];
             return next.length > 60 ? next.slice(-60) : next;
@@ -510,12 +536,13 @@ export function useCrashGame() {
       setCrashPoint(visual.crashPoint);
 
       if (visual.phase === "flying") {
-        const m = visual.multiplier;
-        checkAutoCashoutsRef.current(m);
-        if (m > lastCurveMRef.current) {
-          lastCurveMRef.current = m;
+        phaseRef.current = "flying";
+        const bruteMultiplier = visual.multiplier;
+        evaluateAutoCashoutAtTickRef.current(bruteMultiplier);
+        if (bruteMultiplier > lastCurveMRef.current) {
+          lastCurveMRef.current = bruteMultiplier;
           setCurvePoints((pts) => {
-            const next = [...pts, m];
+            const next = [...pts, bruteMultiplier];
             return next.length > 60 ? next.slice(-60) : next;
           });
         }
@@ -556,6 +583,9 @@ export function useCrashGame() {
           return;
         }
         setBalanceTracked(balance - amount);
+        autoCashoutTargetRef.current[slotIndex] = parseAutoCashoutFromInput(
+          betSlotsRef.current[slotIndex].autoCashoutInput
+        );
         setBetSlots((prev) => {
           const next: [CrashBetSlotUI, CrashBetSlotUI] = [...prev] as [
             CrashBetSlotUI,
@@ -606,6 +636,9 @@ export function useCrashGame() {
         );
         if (ok) {
           if (newBal != null) setBalanceTracked(newBal);
+          autoCashoutTargetRef.current[slotIndex] = parseAutoCashoutFromInput(
+            betSlotsRef.current[slotIndex].autoCashoutInput
+          );
           setBetSlots((prev) => {
             const next: [CrashBetSlotUI, CrashBetSlotUI] = [...prev] as [
               CrashBetSlotUI,
@@ -642,85 +675,101 @@ export function useCrashGame() {
     ]
   );
 
+  /** Cashout direct (auto ou manuel) — utilise le multiplicateur brut du tick, pas de garde « clic ». */
+  const triggerCashout = useCallback(
+    async (
+      slotIndex: CrashBetSlotIndex,
+      bruteMultiplier: number
+    ): Promise<boolean> => {
+      const slot = betSlotsRef.current[slotIndex];
+      if (!slot.hasPlacedBet || slot.hasCashedOut) return false;
+      if (autoCashoutInFlightRef.current[slotIndex]) return false;
+
+      const livePhase =
+        serverStateRef.current?.phase ??
+        lastKnownStateRef.current?.phase ??
+        phaseRef.current;
+      if (livePhase !== "flying") return false;
+
+      const brute = parseFloat(String(bruteMultiplier));
+      if (!Number.isFinite(brute)) return false;
+      const cashoutMultiplier = Math.round(Math.max(1, brute) * 100) / 100;
+
+      autoCashoutInFlightRef.current[slotIndex] = true;
+      try {
+        if (useFallback || isDemoMode()) {
+          const payout = Math.floor(
+            (slot.lockedBetAmount || slot.betAmount) * cashoutMultiplier
+          );
+          setBalance((b) => Math.max(0, Math.floor(b + payout)));
+          setBetSlots((prev) => {
+            const next: [CrashBetSlotUI, CrashBetSlotUI] = [...prev] as [
+              CrashBetSlotUI,
+              CrashBetSlotUI,
+            ];
+            next[slotIndex] = { ...next[slotIndex], hasCashedOut: true };
+            return next;
+          });
+          setMessage(`Cashout ${slotIndex + 1} +${payout} jetons`);
+          window.setTimeout(() => setMessage(null), 2000);
+          return true;
+        }
+
+        const roundId = normalizeRoundId(
+          roundIdRef.current ||
+            serverStateRef.current?.round_id ||
+            serverState?.round_id ||
+            ""
+        );
+        if (!roundId) {
+          setMessage("Manche non synchronisée");
+          window.setTimeout(() => setMessage(null), 2000);
+          return false;
+        }
+
+        const { ok, balance: newBal, payout, error } = await cashoutCrash(
+          cashoutMultiplier,
+          roundId,
+          { betId: slot.betId ?? undefined, betSlot: slotIndex }
+        );
+        if (ok) {
+          if (newBal != null) setBalanceTracked(newBal);
+          setBetSlots((prev) => {
+            const next: [CrashBetSlotUI, CrashBetSlotUI] = [...prev] as [
+              CrashBetSlotUI,
+              CrashBetSlotUI,
+            ];
+            next[slotIndex] = { ...next[slotIndex], hasCashedOut: true };
+            return next;
+          });
+          setMessage(
+            payout != null
+              ? `Cashout ${slotIndex + 1} +${payout} jetons`
+              : "Cashout réussi"
+          );
+          void reloadBets();
+          window.setTimeout(() => setMessage(null), 2000);
+          return true;
+        }
+
+        setMessage(error ?? "Cashout impossible");
+        window.setTimeout(() => setMessage(null), 2000);
+        return false;
+      } finally {
+        autoCashoutInFlightRef.current[slotIndex] = false;
+      }
+    },
+    [useFallback, setBalanceTracked, reloadBets, serverState]
+  );
+
   const cashoutForSlot = useCallback(
     async (slotIndex: CrashBetSlotIndex): Promise<boolean> => {
-      const slot = betSlotsRef.current[slotIndex];
-      if (
-        phaseRef.current !== "flying" ||
-        !slot.hasPlacedBet ||
-        slot.hasCashedOut
-      ) {
-        return false;
-      }
-
-      const roundId =
-        roundIdRef.current ||
-        serverStateRef.current?.round_id ||
-        serverState?.round_id ||
-        "";
-
       const serverNow = await fetchCrashServerNowMs();
       syncClockFromPostgres(serverNow);
       const cashoutMultiplier = getSyncedMultiplier();
-
-      if (useFallback || isDemoMode()) {
-        const payout = Math.floor(
-          (slot.lockedBetAmount || slot.betAmount) * cashoutMultiplier
-        );
-        setBalance((b) => Math.max(0, Math.floor(b + payout)));
-        setBetSlots((prev) => {
-          const next: [CrashBetSlotUI, CrashBetSlotUI] = [...prev] as [
-            CrashBetSlotUI,
-            CrashBetSlotUI,
-          ];
-          next[slotIndex] = { ...next[slotIndex], hasCashedOut: true };
-          return next;
-        });
-        setMessage(`Cashout ${slotIndex + 1} +${payout} jetons`);
-        window.setTimeout(() => setMessage(null), 2000);
-        return true;
-      }
-
-      const { ok, balance: newBal, payout, error } = await cashoutCrash(
-        cashoutMultiplier,
-        roundId,
-        slot.betId ?? undefined
-      );
-      if (ok) {
-        if (newBal != null) setBalanceTracked(newBal);
-        setBetSlots((prev) => {
-          const next: [CrashBetSlotUI, CrashBetSlotUI] = [...prev] as [
-            CrashBetSlotUI,
-            CrashBetSlotUI,
-          ];
-          next[slotIndex] = { ...next[slotIndex], hasCashedOut: true };
-          return next;
-        });
-        setMessage(
-          payout != null
-            ? `Cashout ${slotIndex + 1} +${payout} jetons`
-            : "Cashout réussi"
-        );
-        void reloadBets();
-        window.setTimeout(() => setMessage(null), 2000);
-        return true;
-      }
-
-      setMessage(error ?? "Cashout impossible");
-      window.setTimeout(() => setMessage(null), 2000);
-      return false;
+      return triggerCashout(slotIndex, cashoutMultiplier);
     },
-    [
-      betSlots,
-      phase,
-      balance,
-      useFallback,
-      getSyncedMultiplier,
-      syncClockFromPostgres,
-      setBalanceTracked,
-      reloadBets,
-      serverState,
-    ]
+    [getSyncedMultiplier, syncClockFromPostgres, triggerCashout]
   );
 
   const changeBetForSlot = useCallback(
@@ -751,6 +800,7 @@ export function useCrashGame() {
 
   const setAutoCashoutForSlot = useCallback(
     (slotIndex: CrashBetSlotIndex, value: string) => {
+      autoCashoutTargetRef.current[slotIndex] = parseAutoCashoutFromInput(value);
       setBetSlots((prev) => {
         const next: [CrashBetSlotUI, CrashBetSlotUI] = [...prev] as [
           CrashBetSlotUI,
@@ -763,28 +813,36 @@ export function useCrashGame() {
     []
   );
 
-  cashoutForSlotRef.current = cashoutForSlot;
+  triggerCashoutRef.current = triggerCashout;
 
-  checkAutoCashoutsRef.current = (currentMultiplier: number) => {
-    if (phaseRef.current !== "flying") return;
+  evaluateAutoCashoutAtTickRef.current = (bruteMultiplier: number) => {
+    const brute = parseFloat(String(bruteMultiplier));
+    if (!Number.isFinite(brute)) return;
 
-    const currentMult = parseFloat(String(currentMultiplier));
-    if (!Number.isFinite(currentMult)) return;
-    const m = Math.round(currentMult * 100) / 100;
+    const livePhase =
+      serverStateRef.current?.phase ??
+      lastKnownStateRef.current?.phase ??
+      phaseRef.current;
+    if (livePhase !== "flying") return;
 
     ([0, 1] as const).forEach((slotIndex) => {
       const slot = betSlotsRef.current[slotIndex];
       if (!slot.hasPlacedBet || slot.hasCashedOut) return;
 
-      const target = parseAutoCashoutTarget(slot.autoCashoutInput);
+      const raw = String(slot.autoCashoutInput ?? "")
+        .trim()
+        .replace(",", ".");
+      const parsedInput = raw ? parseFloat(raw) : Number.NaN;
+      const fromInput =
+        !Number.isNaN(parsedInput) && parsedInput > 1.0
+          ? Math.round(parsedInput * 100) / 100
+          : null;
+      const locked = autoCashoutTargetRef.current[slotIndex];
+      const target = locked ?? fromInput;
       if (target == null) return;
-      if (m < target) return;
-      if (autoCashoutInFlightRef.current[slotIndex]) return;
+      if (brute < target) return;
 
-      autoCashoutInFlightRef.current[slotIndex] = true;
-      void cashoutForSlotRef.current(slotIndex).finally(() => {
-        autoCashoutInFlightRef.current[slotIndex] = false;
-      });
+      void triggerCashoutRef.current(slotIndex, brute);
     });
   };
 
