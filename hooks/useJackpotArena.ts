@@ -56,6 +56,7 @@ export function useJackpotArena() {
   const [isSyncing, setIsSyncing] = useState(isSupabaseConfigured());
   const [countdownSeconds, setCountdownSeconds] = useState<number | null>(null);
   const [showWinnerFlash, setShowWinnerFlash] = useState(false);
+  const [isPlacing, setIsPlacing] = useState(false);
   const prevStatusRef = useRef<string | null>(null);
   const prevRoundIdRef = useRef<string | null>(null);
 
@@ -285,18 +286,28 @@ export function useJackpotArena() {
     return Math.floor(pot * (1 - 0.02));
   }, [round?.winner_payout, round?.total_pot]);
 
+  /** Pas de manche en base = waiting (la RPC crée la manche). */
+  const roundStatus = round?.status ?? "waiting";
+  const arenaClosed =
+    roundStatus === "rolling" || roundStatus === "ended";
+  const amountTooLow = betAmount < JACKPOT_MIN_BET;
+  const amountTooHigh = betAmount > balance;
+
   const canBet =
     !!userId &&
-    !myBet &&
-    (round?.status === "waiting" || round?.status === "counting") &&
-    balance >= betAmount &&
-    betAmount >= JACKPOT_MIN_BET;
+    !isDemoMode() &&
+    !isPlacing &&
+    !arenaClosed &&
+    !amountTooLow &&
+    !amountTooHigh;
 
   const enterArena = useCallback(async () => {
     const uid = userIdRef.current;
-    if (!canBet || !uid || placingRef.current) return;
+    if (!uid || placingRef.current || isDemoMode()) return;
+    if (arenaClosed || amountTooLow || amountTooHigh) return;
 
     placingRef.current = true;
+    setIsPlacing(true);
     setMessage(null);
     try {
       const result = await enterJackpotArena(uid, betAmount);
@@ -321,8 +332,17 @@ export function useJackpotArena() {
       window.setTimeout(() => setMessage(null), 5000);
     } finally {
       placingRef.current = false;
+      setIsPlacing(false);
     }
-  }, [canBet, betAmount, applyRound, refreshState, syncBalance]);
+  }, [
+    arenaClosed,
+    amountTooLow,
+    amountTooHigh,
+    betAmount,
+    applyRound,
+    refreshState,
+    syncBalance,
+  ]);
 
   return {
     round,
@@ -336,6 +356,8 @@ export function useJackpotArena() {
     winnerBet,
     winnerPayout,
     canBet,
+    roundStatus,
+    isPlacing,
     enterArena,
     placeBet: enterArena,
     message,

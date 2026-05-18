@@ -10,8 +10,9 @@ interface JackpotBetPanelProps {
   onPlaceBet: () => void;
   canBet: boolean;
   hasBet: boolean;
-  status: JackpotRoundStatus;
+  roundStatus: JackpotRoundStatus;
   balance: number;
+  isPlacing: boolean;
   isDemoMode: boolean;
 }
 
@@ -21,11 +22,14 @@ export function JackpotBetPanel({
   onPlaceBet,
   canBet,
   hasBet,
-  status,
+  roundStatus,
   balance,
+  isPlacing,
   isDemoMode,
 }: JackpotBetPanelProps) {
-  const bettingOpen = status === "waiting" || status === "counting";
+  const arenaClosed =
+    roundStatus === "rolling" || roundStatus === "ended";
+  const inputLocked = hasBet || arenaClosed || isPlacing;
 
   return (
     <div className="rounded-2xl border border-casino-purple-neon/30 bg-zinc-950/90 p-4 shadow-neon-purple backdrop-blur-xl">
@@ -39,7 +43,7 @@ export function JackpotBetPanel({
           min={JACKPOT_MIN_BET}
           step={10}
           value={betAmount}
-          disabled={hasBet || !bettingOpen}
+          disabled={inputLocked}
           onChange={(e) =>
             onBetAmountChange(Math.max(JACKPOT_MIN_BET, Number(e.target.value) || 0))
           }
@@ -47,7 +51,7 @@ export function JackpotBetPanel({
             "flex-1 rounded-xl border border-white/10 bg-black/50 px-4 py-3",
             "font-display text-lg font-bold tabular-nums text-casino-gold-neon",
             "focus:border-casino-purple-neon/50 focus:outline-none focus:ring-1 focus:ring-casino-purple-neon/40",
-            (hasBet || !bettingOpen) && "opacity-50"
+            inputLocked && "opacity-50"
           )}
         />
         <span className="flex items-center text-lg" aria-hidden>
@@ -77,11 +81,17 @@ export function JackpotBetPanel({
           !canBet && "cursor-not-allowed opacity-45"
         )}
       >
-        {hasBet
-          ? "Mise verrouillée"
-          : !bettingOpen
-            ? "Arène fermée"
-            : "Entrer dans l'Arène"}
+        {isPlacing
+          ? "Entrée en cours…"
+          : hasBet
+            ? "Mise verrouillée"
+            : arenaClosed
+              ? "Arène fermée"
+              : betAmount > balance
+                ? "Solde insuffisant"
+                : betAmount < JACKPOT_MIN_BET
+                  ? `Min. ${JACKPOT_MIN_BET} jetons`
+                  : "Entrer dans l'Arène"}
       </button>
     </div>
   );

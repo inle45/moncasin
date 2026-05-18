@@ -27,6 +27,8 @@ export default function JackpotPage() {
     myBet,
     winnerBet,
     canBet,
+    roundStatus,
+    isPlacing,
     placeBet,
     message,
     connected,
@@ -126,8 +128,9 @@ export default function JackpotPage() {
           onPlaceBet={() => void placeBet()}
           canBet={canBet}
           hasBet={!!myBet}
-          status={status}
+          roundStatus={roundStatus}
           balance={balance}
+          isPlacing={isPlacing}
           isDemoMode={isDemoMode}
         />
 
