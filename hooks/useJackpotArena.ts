@@ -12,6 +12,7 @@ import {
   JACKPOT_LOOP_TICK_MS,
   JACKPOT_MIN_BET,
   JACKPOT_STATE_POLL_MS,
+  JACKPOT_STUCK_ROLL_MS,
 } from "@/utils/jackpot/constants";
 import { parseJackpotBet, parseJackpotRound } from "@/utils/jackpot/parse";
 import { buildPotSegments } from "@/utils/jackpot/segments";
@@ -32,7 +33,9 @@ function mergeBet(
   prev: JackpotBetRow[],
   incoming: JackpotBetRow
 ): JackpotBetRow[] {
-  const idx = prev.findIndex((b) => b.id === incoming.id);
+  const idx = prev.findIndex(
+    (b) => b.id === incoming.id || b.user_id === incoming.user_id
+  );
   if (idx >= 0) {
     const next = [...prev];
     next[idx] = incoming;
@@ -44,14 +47,25 @@ function mergeBet(
   );
 }
 
+function formatRollError(
+  error: string | null,
+  debug?: { postgrestCode?: string; postgrestHint?: string }
+): string {
+  const code = debug?.postgrestCode ? ` [${debug.postgrestCode}]` : "";
+  const hint = debug?.postgrestHint ? ` — ${debug.postgrestHint}` : "";
+  return `${error ?? "Tirage impossible"}${code}${hint}`;
+}
+
 export function useJackpotArena() {
   const roundRef = useRef<JackpotRound | null>(null);
+  const betsRef = useRef<JackpotBetRow[]>([]);
   const userIdRef = useRef<string | null>(null);
   const advancingRef = useRef(false);
   const submittingRef = useRef(false);
   const hasPlacedBetRef = useRef(false);
   const rollTriggeredForRoundRef = useRef<string | null>(null);
   const triggeringRollRef = useRef(false);
+  const stuckRollSinceRef = useRef<number | null>(null);
 
   const [round, setRound] = useState<JackpotRound | null>(null);
   const [bets, setBets] = useState<JackpotBetRow[]>([]);
@@ -59,6 +73,7 @@ export function useJackpotArena() {
   const [userId, setUserId] = useState<string | null>(null);
   const [betAmount, setBetAmount] = useState(100);
   const [message, setMessage] = useState<string | null>(null);
+  const [criticalError, setCriticalError] = useState<string | null>(null);
   const [connected, setConnected] = useState(false);
   const [isSyncing, setIsSyncing] = useState(isSupabaseConfigured());
   const [countdownSeconds, setCountdownSeconds] = useState<number | null>(null);
@@ -69,10 +84,13 @@ export function useJackpotArena() {
   const prevRoundIdRef = useRef<string | null>(null);
 
   roundRef.current = round;
+  betsRef.current = bets;
   hasPlacedBetRef.current = hasPlacedBet;
 
   const setBetsAggregated = useCallback((rows: JackpotBetRow[]) => {
-    setBets(aggregateBetsByUser(rows));
+    const aggregated = aggregateBetsByUser(rows);
+    betsRef.current = aggregated;
+    setBets(aggregated);
   }, []);
 
   const applyRound = useCallback((next: JackpotRound | null) => {
@@ -86,13 +104,17 @@ export function useJackpotArena() {
     if (prevRoundId && prevRoundId !== next.id) {
       setShowWinnerFlash(false);
       setBets([]);
+      betsRef.current = [];
       setHasPlacedBet(false);
       hasPlacedBetRef.current = false;
       rollTriggeredForRoundRef.current = null;
+      setCriticalError(null);
     }
 
     if (next.status === "rolling" || next.status === "ended") {
       rollTriggeredForRoundRef.current = next.id;
+      setCriticalError(null);
+      stuckRollSinceRef.current = null;
     }
 
     if (next.status === "ended" && prevStatus !== "ended") {
@@ -105,15 +127,18 @@ export function useJackpotArena() {
   }, []);
 
   const reloadBets = useCallback(
-    async (roundId?: string) => {
+    async (roundId?: string): Promise<{ count: number; error: string | null }> => {
       const rid = roundId ?? roundRef.current?.id;
-      if (!rid) return;
+      if (!rid) return { count: 0, error: null };
+
       const { bets: rows, error } = await fetchJackpotBets(rid);
       if (error) {
-        console.warn("[MonCasin Jackpot] reloadBets:", error);
-        return;
+        console.warn("[MonCasin Jackpot] reloadBets:", error, { roundId: rid });
+        return { count: betsRef.current.length, error };
       }
+
       setBetsAggregated(rows);
+      return { count: aggregateBetsByUser(rows).length, error: null };
     },
     [setBetsAggregated]
   );
@@ -202,6 +227,18 @@ export function useJackpotArena() {
         "postgres_changes",
         { event: "*", schema: "public", table: "jackpot_bets" },
         (payload) => {
+          if (payload.new && typeof payload.new === "object") {
+            const bet = parseJackpotBet(payload.new as Record<string, unknown>);
+            if (bet) {
+              const rid = roundRef.current?.id;
+              if (!rid || bet.round_id === rid || !bet.round_id) {
+                setBets((prev) =>
+                  aggregateBetsByUser(mergeBet(prev, bet))
+                );
+              }
+            }
+          }
+
           const betRow =
             (payload.new as Record<string, unknown> | undefined) ??
             (payload.old as Record<string, unknown> | undefined);
@@ -209,9 +246,7 @@ export function useJackpotArena() {
             ? String(betRow.round_id)
             : roundRef.current?.id;
 
-          if (betRoundId) {
-            void reloadBets(betRoundId);
-          }
+          if (betRoundId) void reloadBets(betRoundId);
         }
       )
       .subscribe((status, err) => {
@@ -283,7 +318,42 @@ export function useJackpotArena() {
     round?.counting_ends_at,
   ]);
 
-  /** À 0 s : déclenche le tirage côté serveur (une fois par manche). */
+  const roundStatus = round?.status ?? "waiting";
+  const countdownExpired = isCountdownExpired(round, countdownSeconds);
+
+  useEffect(() => {
+    if (roundStatus === "counting" && countdownExpired) {
+      if (!stuckRollSinceRef.current) {
+        stuckRollSinceRef.current = Date.now();
+      }
+    } else {
+      stuckRollSinceRef.current = null;
+    }
+  }, [roundStatus, countdownExpired, round?.id]);
+
+  /** Resync si bloqué sur « tirage imminent » > 5 s. */
+  useEffect(() => {
+    if (!stuckRollSinceRef.current || roundStatus !== "counting" || !countdownExpired) {
+      return;
+    }
+
+    const id = window.setTimeout(() => {
+      if (roundRef.current?.status !== "counting") return;
+      if (!isCountdownExpired(roundRef.current, computeCountdownSeconds(roundRef.current))) {
+        return;
+      }
+
+      setCriticalError(
+        "Tirage en attente — resynchronisation de l'arène en cours…"
+      );
+      rollTriggeredForRoundRef.current = null;
+      void refreshState();
+    }, JACKPOT_STUCK_ROLL_MS);
+
+    return () => window.clearTimeout(id);
+  }, [roundStatus, countdownExpired, round?.id, refreshState]);
+
+  /** À 0 s : recharge les mises puis déclenche trigger_jackpot_roll. */
   useEffect(() => {
     if (!isSupabaseConfigured() || isDemoMode()) return;
 
@@ -298,25 +368,50 @@ export function useJackpotArena() {
 
     void (async () => {
       try {
+        const { count, error: betsError } = await reloadBets(current.id);
+        const playerCount = count || aggregateBetsByUser(betsRef.current).length;
+
+        if (betsError) {
+          setCriticalError(
+            `Impossible de lire les mises (RLS ?) : ${betsError}`
+          );
+        }
+
+        if (playerCount < 2) {
+          const msg = `Tirage bloqué : ${playerCount} gladiateur visible pour la manche ${current.id.slice(0, 8)}… (il en faut 2). Vérifie jackpot_bets.round_id et la policy SELECT.`;
+          setCriticalError(msg);
+          console.error("ERREUR CRITIQUE JACKPOT:", { reason: "insufficient_players", playerCount, roundId: current.id });
+          rollTriggeredForRoundRef.current = null;
+          await refreshState();
+          return;
+        }
+
+        setCriticalError(null);
         const result = await triggerJackpotRoll();
 
         if (result.ok && result.round) {
           applyRound(result.round);
-          await reloadBets(result.round.id);
+          if (result.bets?.length) {
+            setBetsAggregated(result.bets);
+          } else {
+            await reloadBets(result.round.id);
+          }
 
           if (result.balance != null) {
             setBalance(Math.floor(result.balance));
           } else if (result.round.winner_id === userIdRef.current) {
             await syncBalance();
           }
+          setCriticalError(null);
         } else {
+          const errMsg = formatRollError(result.error, result.debug);
+          setCriticalError(errMsg);
           console.error("ERREUR CRITIQUE JACKPOT:", {
             error: result.error,
             debug: result.debug,
             roundId: current.id,
+            playerCount,
             countdownSeconds,
-            started_at: current.started_at,
-            counting_ends_at: current.counting_ends_at,
           });
           await refreshState();
           const after = roundRef.current;
@@ -325,7 +420,9 @@ export function useJackpotArena() {
           }
         }
       } catch (err) {
-        console.error("[MonCasin Jackpot] trigger_jackpot_roll exception:", err);
+        const msg = err instanceof Error ? err.message : String(err);
+        setCriticalError(`Exception tirage : ${msg}`);
+        console.error("ERREUR CRITIQUE JACKPOT:", err);
         rollTriggeredForRoundRef.current = null;
         await refreshState();
       } finally {
@@ -340,6 +437,7 @@ export function useJackpotArena() {
     reloadBets,
     refreshState,
     syncBalance,
+    setBetsAggregated,
   ]);
 
   const uniqueBets = useMemo(() => aggregateBetsByUser(bets), [bets]);
@@ -366,8 +464,6 @@ export function useJackpotArena() {
     return Math.floor(pot * (1 - 0.02));
   }, [round?.winner_payout, round?.total_pot]);
 
-  const roundStatus = round?.status ?? "waiting";
-  const countdownExpired = isCountdownExpired(round, countdownSeconds);
   const arenaClosed =
     roundStatus === "rolling" ||
     roundStatus === "ended" ||
@@ -402,6 +498,7 @@ export function useJackpotArena() {
     submittingRef.current = true;
     setIsSubmitting(true);
     setMessage(null);
+    setCriticalError(null);
 
     try {
       const result = await enterJackpotArena(uid, betAmount);
@@ -414,7 +511,9 @@ export function useJackpotArena() {
         else await syncBalance(uid);
 
         if (result.round) applyRound(result.round);
-        if (result.bet) {
+        if (result.bets?.length) {
+          setBetsAggregated(result.bets);
+        } else if (result.bet) {
           setBets((prev) =>
             aggregateBetsByUser(mergeBet(prev, result.bet!))
           );
@@ -444,6 +543,7 @@ export function useJackpotArena() {
     applyRound,
     reloadBets,
     syncBalance,
+    setBetsAggregated,
   ]);
 
   return {
@@ -464,6 +564,7 @@ export function useJackpotArena() {
     enterArena,
     placeBet: enterArena,
     message,
+    criticalError,
     connected,
     isSyncing,
     countdownSeconds,

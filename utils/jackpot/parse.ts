@@ -59,19 +59,47 @@ export function parseJackpotRound(row: Record<string, unknown>): JackpotRound | 
 }
 
 export function parseJackpotBet(row: Record<string, unknown>): JackpotBetRow | null {
-  const id = String(row.id ?? "");
-  if (!id) return null;
+  const userId = pickString(row, "user_id", "player_id", "uid");
+  const roundId = pickString(row, "round_id", "jackpot_round_id", "roundId");
+  if (!userId) return null;
+
+  const id =
+    pickString(row, "id", "bet_id") ??
+    `${roundId ?? "round"}-${userId}`;
 
   return {
     id,
-    round_id: String(row.round_id ?? ""),
-    user_id: String(row.user_id ?? ""),
-    username: String(row.username ?? "Joueur"),
-    bet_amount: pickNumber(row, "bet_amount", "amount"),
-    ticket_start: pickNumber(row, "ticket_start"),
-    ticket_end: pickNumber(row, "ticket_end"),
-    created_at: String(row.created_at ?? ""),
+    round_id: roundId ?? "",
+    user_id: userId,
+    username: String(row.username ?? row.player_name ?? "Joueur"),
+    bet_amount: pickNumber(row, "bet_amount", "amount", "stake", "wager"),
+    ticket_start: pickNumber(row, "ticket_start", "tickets_start", "ticket_from"),
+    ticket_end: pickNumber(row, "ticket_end", "tickets_end", "ticket_to"),
+    created_at: String(row.created_at ?? row.inserted_at ?? ""),
   };
+}
+
+export function parseJackpotBetsList(source: unknown): JackpotBetRow[] {
+  if (source == null) return [];
+  if (Array.isArray(source)) {
+    return source
+      .map((row) =>
+        typeof row === "object" && row
+          ? parseJackpotBet(row as Record<string, unknown>)
+          : null
+      )
+      .filter((b): b is JackpotBetRow => b != null);
+  }
+  if (typeof source !== "object") return [];
+
+  const obj = source as Record<string, unknown>;
+  const raw =
+    obj.bets ??
+    obj.jackpot_bets ??
+    obj.players ??
+    obj.gladiators;
+
+  return Array.isArray(raw) ? parseJackpotBetsList(raw) : [];
 }
 
 export function parseJackpotRpcPayload(data: unknown): {
@@ -80,10 +108,18 @@ export function parseJackpotRpcPayload(data: unknown): {
   balance: number | null;
   round: JackpotRound | null;
   bet: JackpotBetRow | null;
+  bets: JackpotBetRow[];
 } {
   const unwrapped = unwrapRpcJson(data);
   if (unwrapped == null) {
-    return { ok: false, error: "Réponse vide", balance: null, round: null, bet: null };
+    return {
+      ok: false,
+      error: "Réponse vide",
+      balance: null,
+      round: null,
+      bet: null,
+      bets: [],
+    };
   }
 
   if (typeof unwrapped === "object" && "ok" in (unwrapped as object)) {
@@ -95,11 +131,13 @@ export function parseJackpotRpcPayload(data: unknown): {
         balance: null,
         round: null,
         bet: null,
+        bets: [],
       };
     }
 
     const roundRaw = obj.round ?? obj.jackpot_round;
     const betRaw = obj.bet ?? obj.jackpot_bet;
+    const bets = parseJackpotBetsList(obj);
 
     return {
       ok: true,
@@ -113,17 +151,32 @@ export function parseJackpotRpcPayload(data: unknown): {
         betRaw && typeof betRaw === "object"
           ? parseJackpotBet(betRaw as Record<string, unknown>)
           : null,
+      bets,
     };
   }
 
   if (typeof unwrapped === "object") {
     const asRound = parseJackpotRound(unwrapped as Record<string, unknown>);
     if (asRound) {
-      return { ok: true, error: null, balance: null, round: asRound, bet: null };
+      return {
+        ok: true,
+        error: null,
+        balance: null,
+        round: asRound,
+        bet: null,
+        bets: parseJackpotBetsList(unwrapped),
+      };
     }
   }
 
-  return { ok: false, error: "Réponse RPC invalide", balance: null, round: null, bet: null };
+  return {
+    ok: false,
+    error: "Réponse RPC invalide",
+    balance: null,
+    round: null,
+    bet: null,
+    bets: [],
+  };
 }
 
 export function parseJackpotTickPayload(data: unknown): {

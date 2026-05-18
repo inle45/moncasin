@@ -15,3 +15,9 @@
 --   started_at timestamptz  → 15 - (now - started_at)
 --   ou counting_ends_at     → ceil(ends_at - now)
 -- Si les deux sont NULL/invalides, le client forçait 15s en boucle (tirage jamais déclenché).
+--
+-- RLS jackpot_bets : policy SELECT pour TOUS les joueurs (pas seulement auth.uid() = user_id)
+--   create policy jackpot_bets_select on public.jackpot_bets for select using (true);
+-- Sinon le front voit pot OK (round) mais 0 gladiateur (mises invisibles).
+--
+-- Les mises doivent avoir le même round_id que la manche active (jackpot_active_round_id).

@@ -31,6 +31,7 @@ export default function JackpotPage() {
     isSubmitting,
     placeBet,
     message,
+    criticalError,
     connected,
     isSyncing,
     countdownSeconds,
@@ -89,6 +90,15 @@ export default function JackpotPage() {
             {round?.round_number != null && ` · Manche #${round.round_number}`}
           </span>
         </div>
+
+        {criticalError && (
+          <p
+            role="alert"
+            className="rounded-xl border border-red-500/50 bg-red-950/60 px-3 py-2 text-center text-sm font-medium text-red-200"
+          >
+            {criticalError}
+          </p>
+        )}
 
         {message && (
           <p className="rounded-xl border border-casino-gold/30 bg-casino-gold/10 px-3 py-2 text-center text-sm text-casino-gold-neon">

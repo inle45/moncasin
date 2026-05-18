@@ -1,5 +1,6 @@
 import {
   parseJackpotBet,
+  parseJackpotBetsList,
   parseJackpotRpcPayload,
   parseJackpotRound,
   parseJackpotTickPayload,
@@ -19,6 +20,7 @@ export type TriggerJackpotRollResult = {
   ok: boolean;
   balance?: number;
   round?: JackpotRound;
+  bets?: JackpotBetRow[];
   error: string | null;
   debug?: EnterJackpotArenaResult["debug"];
 };
@@ -27,6 +29,7 @@ export type EnterJackpotArenaResult = {
   ok: boolean;
   balance?: number;
   bet?: JackpotBetRow;
+  bets?: JackpotBetRow[];
   round?: JackpotRound;
   error: string | null;
   /** Détail technique pour l'UI / la console */
@@ -58,14 +61,50 @@ function formatPostgrestError(err: PostgrestErrorShape): string {
   return parts.join(" · ");
 }
 
-/** Dernière manche (manche active ou récemment terminée). */
+const ACTIVE_ROUND_STATUSES = ["counting", "rolling", "waiting"] as const;
+
+/** Manche en cours (aligné sur jackpot_active_round_id : counting > rolling > waiting). */
 export async function fetchActiveJackpotRound(): Promise<
   RpcResult<JackpotRound>
 > {
   const supabase = createClient();
   if (!supabase) return { data: null, error: "Supabase non configuré" };
 
-  const { data: response, timedOut, error: timeoutErr } = await safeQuery(
+  for (const status of ACTIVE_ROUND_STATUSES) {
+    const { data: response, timedOut, error: timeoutErr } = await safeQuery(
+      supabase
+        .from("jackpot_rounds")
+        .select("*")
+        .eq("status", status)
+        .order("updated_at", { ascending: false })
+        .limit(1)
+        .maybeSingle()
+    );
+
+    if (timedOut) {
+      return { data: null, error: "Connexion expirée (jackpot_rounds)" };
+    }
+    if (timeoutErr) {
+      return { data: null, error: String(timeoutErr) };
+    }
+    if (!response) continue;
+
+    const { data, error } = response as {
+      data: Record<string, unknown> | null;
+      error: PostgrestErrorShape | null;
+    };
+
+    if (error) {
+      logJackpotRpc("fetchActiveJackpotRound ERROR", { status, error });
+      return { data: null, error: formatPostgrestError(error) };
+    }
+    if (!data) continue;
+
+    const round = parseJackpotRound(data);
+    if (round) return { data: round, error: null };
+  }
+
+  const { data: fallbackRes, timedOut: fbTimeout } = await safeQuery(
     supabase
       .from("jackpot_rounds")
       .select("*")
@@ -74,29 +113,28 @@ export async function fetchActiveJackpotRound(): Promise<
       .maybeSingle()
   );
 
-  if (timedOut) {
-    return { data: null, error: "Connexion expirée (jackpot_rounds)" };
-  }
-  if (timeoutErr) {
-    return { data: null, error: String(timeoutErr) };
-  }
-  if (!response) {
-    return { data: null, error: "Aucune réponse jackpot_rounds" };
+  if (fbTimeout || !fallbackRes) {
+    return { data: null, error: "Aucune manche jackpot_rounds" };
   }
 
-  const { data, error } = response as {
+  const { data: fbData, error: fbError } = fallbackRes as {
     data: Record<string, unknown> | null;
     error: PostgrestErrorShape | null;
   };
 
-  if (error) {
-    logJackpotRpc("fetchActiveJackpotRound ERROR", { error });
-    return { data: null, error: formatPostgrestError(error) };
+  if (fbError) {
+    return { data: null, error: formatPostgrestError(fbError) };
   }
-  if (!data) return { data: null, error: null };
+  if (!fbData) return { data: null, error: null };
 
-  const round = parseJackpotRound(data);
+  const round = parseJackpotRound(fbData);
   return round ? { data: round, error: null } : { data: null, error: "État invalide" };
+}
+
+function parseBetsFromRows(rows: Record<string, unknown>[] | null): JackpotBetRow[] {
+  return (rows ?? [])
+    .map((row) => parseJackpotBet(row))
+    .filter((b): b is JackpotBetRow => b != null);
 }
 
 export async function fetchJackpotBets(
@@ -105,16 +143,58 @@ export async function fetchJackpotBets(
   const supabase = createClient();
   if (!supabase) return { bets: [], error: null };
 
+  let lastError: string | null = null;
+
+  const { data: embeddedRes, timedOut: embTimeout } = await safeQuery(
+    supabase
+      .from("jackpot_rounds")
+      .select(
+        "id, jackpot_bets ( id, round_id, user_id, username, bet_amount, ticket_start, ticket_end, created_at )"
+      )
+      .eq("id", roundId)
+      .maybeSingle()
+  );
+
+  if (!embTimeout && embeddedRes) {
+    const { data: embData, error: embError } = embeddedRes as {
+      data: Record<string, unknown> | null;
+      error: PostgrestErrorShape | null;
+    };
+
+    if (embError) {
+      lastError = formatPostgrestError(embError);
+      logJackpotRpc("fetchJackpotBets embed ERROR", { roundId, error: embError });
+    } else if (embData) {
+      const nested = embData.jackpot_bets;
+      const embedded = Array.isArray(nested)
+        ? parseBetsFromRows(nested as Record<string, unknown>[])
+        : parseJackpotBetsList(nested);
+
+      if (embedded.length > 0) {
+        logJackpotRpc("fetchJackpotBets embed OK", {
+          roundId,
+          count: embedded.length,
+        });
+        return { bets: embedded, error: null };
+      }
+    }
+  }
+
   const { data: response, timedOut } = await safeQuery(
     supabase
       .from("jackpot_bets")
-      .select("*")
+      .select(
+        "id, round_id, user_id, username, bet_amount, ticket_start, ticket_end, created_at"
+      )
       .eq("round_id", roundId)
       .order("created_at", { ascending: true })
   );
 
   if (timedOut || !response) {
-    return { bets: [], error: "Connexion expirée (jackpot_bets)" };
+    return {
+      bets: [],
+      error: lastError ?? "Connexion expirée (jackpot_bets)",
+    };
   }
 
   const { data, error } = response as {
@@ -123,15 +203,23 @@ export async function fetchJackpotBets(
   };
 
   if (error) {
+    const msg = formatPostgrestError(error);
     logJackpotRpc("fetchJackpotBets ERROR", { roundId, error });
-    return { bets: [], error: formatPostgrestError(error) };
+    return { bets: [], error: msg };
   }
 
-  const bets = (data ?? [])
-    .map((row) => parseJackpotBet(row))
-    .filter((b): b is JackpotBetRow => b != null);
+  const bets = parseBetsFromRows(data);
 
-  return { bets, error: null };
+  if (bets.length === 0 && (data?.length ?? 0) > 0) {
+    console.warn(
+      "[MonCasin Jackpot] Lignes jackpot_bets reçues mais parse échoué — vérifie user_id / id",
+      data
+    );
+  }
+
+  logJackpotRpc("fetchJackpotBets direct", { roundId, count: bets.length });
+
+  return { bets, error: bets.length === 0 ? lastError : null };
 }
 
 export async function advanceJackpotTick(): Promise<
@@ -267,6 +355,7 @@ export async function triggerJackpotRoll(): Promise<TriggerJackpotRollResult> {
       ok: true,
       balance: parsed.balance ?? undefined,
       round: parsed.round ?? undefined,
+      bets: parsed.bets.length > 0 ? parsed.bets : undefined,
       error: null,
       debug: { step: "success", rawData },
     };
@@ -412,10 +501,18 @@ export async function enterJackpotArena(
         betId: parsed.bet?.id,
       });
 
+      const rpcBets =
+        parsed.bets.length > 0
+          ? parsed.bets
+          : parsed.bet
+            ? [parsed.bet]
+            : [];
+
       return {
         ok: true,
         balance: parsed.balance ?? undefined,
         bet: parsed.bet ?? undefined,
+        bets: rpcBets.length > 0 ? rpcBets : undefined,
         round: parsed.round ?? undefined,
         error: null,
         debug: { step: "success", rawData, paramsUsed: attempt.params },
