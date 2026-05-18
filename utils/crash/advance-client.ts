@@ -33,11 +33,12 @@ export function crashStateSignature(state: CrashPublicState): string {
 /**
  * Avance la manche : RPC client → API serveur (/api/crash/loop) → lecture table.
  */
-async function resolveServerTimeMs(
-  fromResponse: number | null | undefined
+/** Uniquement Postgres (`crash_server_now` ou `server_now` dans crash_get_state). */
+async function resolvePostgresNowMs(
+  fromPayload: number | null | undefined
 ): Promise<number | null> {
-  if (fromResponse != null && Number.isFinite(fromResponse)) {
-    return fromResponse;
+  if (fromPayload != null && Number.isFinite(fromPayload)) {
+    return fromPayload;
   }
   return fetchCrashServerNowMs();
 }
@@ -51,7 +52,7 @@ export async function runCrashLoopTick(): Promise<CrashLoopTickResult> {
       phase: rpc.data.phase,
       round_id: rpc.data.round_id,
     });
-    const serverTimeMs = await resolveServerTimeMs(null);
+    const serverTimeMs = await resolvePostgresNowMs(rpc.serverNowMs);
     return { state: rpc.data, source: "rpc", errors, serverTimeMs };
   }
 
@@ -99,7 +100,7 @@ export async function runCrashLoopTick(): Promise<CrashLoopTickResult> {
             apiSource: body.source,
           });
         }
-        const serverTimeMs = await resolveServerTimeMs(body.serverTime);
+        const serverTimeMs = await resolvePostgresNowMs(null);
         return { state: fromApi, source: "api", errors, serverTimeMs };
       }
 
@@ -121,7 +122,7 @@ export async function runCrashLoopTick(): Promise<CrashLoopTickResult> {
       phase: table.data.phase,
       tableError: table.error,
     });
-    const serverTimeMs = await resolveServerTimeMs(null);
+    const serverTimeMs = await resolvePostgresNowMs(null);
     return { state: table.data, source: "table", errors, serverTimeMs };
   }
 
@@ -130,7 +131,7 @@ export async function runCrashLoopTick(): Promise<CrashLoopTickResult> {
     logCrashTick("error", "Lecture table impossible", table.error);
   }
 
-  const serverTimeMs = await resolveServerTimeMs(null);
+  const serverTimeMs = await resolvePostgresNowMs(null);
   return { state: null, source: "none", errors, serverTimeMs };
 }
 

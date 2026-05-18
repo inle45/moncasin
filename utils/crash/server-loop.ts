@@ -27,7 +27,8 @@ export interface CrashSnapshot {
   state: CrashPublicState;
   history: number[];
   bets: CrashBetRow[];
-  serverTime: number;
+  /** Horloge Postgres (crash_server_now). Null si RPC indisponible — ne pas inventer avec Date.now(). */
+  serverTime: number | null;
   error: string | null;
   source: "supabase" | "fallback";
   tickLog: CrashTickStepLog[];
@@ -159,19 +160,20 @@ export async function syncCrashLoop(
   state: CrashPublicState;
   tickLog: CrashTickStepLog[];
   lastError: string | null;
-  serverTimeMs: number;
+  serverTimeMs: number | null;
 }> {
   const tickLog: CrashTickStepLog[] = [];
   let lastError: string | null = null;
   let step = 0;
 
-  const supabaseNowMs = await fetchSupabaseNowMs(supabase);
-  const serverTimeMs = supabaseNowMs ?? Date.now();
-  const serverNowIso = new Date(serverTimeMs).toISOString();
+  let supabaseNowMs = await fetchSupabaseNowMs(supabase);
+  const serverNowIso = supabaseNowMs
+    ? new Date(supabaseNowMs).toISOString()
+    : "postgres-now-unavailable";
 
   if (supabaseNowMs === null) {
     lastError =
-      "RPC crash_server_now absente — exécuter supabase/crash-server-now.sql (comparaisons horaires approximatives)";
+      "RPC crash_server_now absente — exécuter supabase/crash-server-now.sql";
     logStep(tickLog, ++step, "crash_server_now", null, null, lastError, null, serverNowIso);
   } else {
     logStep(
@@ -238,15 +240,19 @@ export async function syncCrashLoop(
 
   if (!state) {
     return {
-      state: createFallbackCrashState(serverTimeMs),
+      state: createFallbackCrashState(),
       tickLog,
       lastError: lastError ?? "crash_live_state introuvable",
-      serverTimeMs,
+      serverTimeMs: supabaseNowMs,
     };
   }
 
+  if (supabaseNowMs === null) {
+    return { state, tickLog, lastError, serverTimeMs: null };
+  }
+
   for (let i = 0; i < maxSteps; i++) {
-    if (!serverStateNeedsRpcTick(state, serverTimeMs)) break;
+    if (!serverStateNeedsRpcTick(state, supabaseNowMs)) break;
 
     const phaseBefore = state.phase;
     const { state: afterRpc, rpcError } = await rpcAdvanceTick(supabase);
@@ -303,9 +309,9 @@ export async function syncCrashLoop(
       }
     }
 
-    if (!serverStateNeedsRpcTick(state, serverTimeMs)) continue;
+    if (!serverStateNeedsRpcTick(state, supabaseNowMs)) continue;
 
-    if (!serverStateNeedsDirectBettingFallback(state, serverTimeMs)) continue;
+    if (!serverStateNeedsDirectBettingFallback(state, supabaseNowMs)) continue;
 
     const direct = await directStartFlying(supabase);
     logStep(
@@ -340,7 +346,7 @@ export async function syncCrashLoop(
         state = afterDirect;
         if (
           !progressed &&
-          serverStateNeedsDirectBettingFallback(state, serverTimeMs)
+          serverStateNeedsDirectBettingFallback(state, supabaseNowMs)
         ) {
           lastError =
             lastError ??
@@ -355,7 +361,7 @@ export async function syncCrashLoop(
     if (
       afterRpc &&
       afterRpc.phase === phaseBefore &&
-      serverStateNeedsDirectBettingFallback(state, serverTimeMs)
+      serverStateNeedsDirectBettingFallback(state, supabaseNowMs)
     ) {
       lastError =
         lastError ??
@@ -363,7 +369,9 @@ export async function syncCrashLoop(
     }
   }
 
-  return { state, tickLog, lastError, serverTimeMs };
+  supabaseNowMs = (await fetchSupabaseNowMs(supabase)) ?? supabaseNowMs;
+
+  return { state, tickLog, lastError, serverTimeMs: supabaseNowMs };
 }
 
 async function fetchHistory(
@@ -408,7 +416,7 @@ export async function runCrashSnapshot(options?: {
       state: createFallbackCrashState(),
       history: [],
       bets: [],
-      serverTime: Date.now(),
+      serverTime: null,
       error: "Clés Supabase manquantes (SUPABASE_SERVICE_ROLE_KEY ou ANON)",
       source: "fallback",
       tickLog: [],
@@ -422,8 +430,9 @@ export async function runCrashSnapshot(options?: {
       supabase,
       options?.maxSteps
     );
-    const serverTime = serverTimeMs;
-    const needsAdvance = serverStateStuck(state, serverTime);
+    const serverTime = serverTimeMs ?? (await fetchSupabaseNowMs(supabase));
+    const needsAdvance =
+      serverTime != null ? serverStateStuck(state, serverTime) : false;
     const history = await fetchHistory(supabase);
     const bets = state.round_id ? await fetchBets(supabase, state.round_id) : [];
 
@@ -456,7 +465,7 @@ export async function runCrashSnapshot(options?: {
       state: createFallbackCrashState(),
       history: [],
       bets: [],
-      serverTime: Date.now(),
+      serverTime: null,
       error: message,
       source: "fallback",
       tickLog: [],

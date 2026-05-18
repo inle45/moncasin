@@ -1,6 +1,6 @@
 /**
- * Décalage horaire client ↔ Supabase : offset = serverNow - clientNow au moment de la sync.
- * Utiliser syncedNowMs(offset) pour l'UI (aligné sur crash_current_multiplier).
+ * Horloge UI = Postgres au moment de la sync + écoulement monotone du navigateur.
+ * offset = serverNowMs - clientNowMs (jamais Date.now() Vercel).
  */
 export function computeClockOffsetMs(
   serverTimeMs: number,
@@ -15,4 +15,13 @@ export function syncedNowMs(
   clientNowMs = Date.now()
 ): number {
   return clientNowMs + clockOffsetMs;
+}
+
+/** Ancrage Postgres + horloge monotone locale (meilleur entre deux sync RPC). */
+export function postgresNowFromAnchor(
+  postgresAnchorMs: number,
+  clientAnchorMs: number,
+  clientNowMs = Date.now()
+): number {
+  return postgresAnchorMs + (clientNowMs - clientAnchorMs);
 }

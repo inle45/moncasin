@@ -9,7 +9,10 @@ import {
   CRASH_BET_OPTIONS,
   DEFAULT_CRASH_BET,
 } from "@/utils/crash/constants";
-import { computeClockOffsetMs, syncedNowMs } from "@/utils/crash/client-clock";
+import {
+  computeClockOffsetMs,
+  postgresNowFromAnchor,
+} from "@/utils/crash/client-clock";
 import { deriveVisualState } from "@/utils/crash/visual-state";
 import { normalizeRoundId } from "@/utils/crash/uuid";
 import { liveStateRowToPublic } from "@/utils/crash/live-state";
@@ -38,6 +41,8 @@ export type { CrashPhase };
 /** Boucle multijoueur : crash_advance_tick idempotent côté client (pas de cron Vercel). */
 const LOOP_TICK_MS = 500;
 const VISUAL_TICK_MS = 50;
+/** Resync horloge Postgres (jamais Vercel / Date.now serveur). */
+const POSTGRES_CLOCK_RESYNC_MS = 300;
 const REALTIME_STALE_MS = 30_000;
 const STATE_POLL_MS = 3_000;
 
@@ -51,18 +56,28 @@ export function useCrashGame() {
   const lastRealtimeAtRef = useRef(0);
   const lastCurveMRef = useRef(1);
   const lastKnownStateRef = useRef<CrashPublicState | null>(null);
-  /** offset = serverTimeMs - Date.now() à la dernière sync (horloge Supabase). */
+  const postgresAnchorMsRef = useRef<number | null>(null);
+  const clientAnchorMsRef = useRef(0);
   const clockOffsetRef = useRef(0);
+  const postgresClockSyncedRef = useRef(false);
 
-  const syncClockFromServer = useCallback((serverTimeMs: number | null | undefined) => {
-    if (serverTimeMs == null || !Number.isFinite(serverTimeMs)) return;
-    clockOffsetRef.current = computeClockOffsetMs(serverTimeMs);
-  }, []);
-
-  const nowSynced = useCallback(
-    () => syncedNowMs(clockOffsetRef.current),
+  const syncClockFromPostgres = useCallback(
+    (serverTimeMs: number | null | undefined) => {
+      if (serverTimeMs == null || !Number.isFinite(serverTimeMs)) return;
+      const clientNow = Date.now();
+      postgresAnchorMsRef.current = serverTimeMs;
+      clientAnchorMsRef.current = clientNow;
+      clockOffsetRef.current = computeClockOffsetMs(serverTimeMs, clientNow);
+      postgresClockSyncedRef.current = true;
+    },
     []
   );
+
+  const nowSynced = useCallback(() => {
+    const anchor = postgresAnchorMsRef.current;
+    if (anchor == null) return Date.now();
+    return postgresNowFromAnchor(anchor, clientAnchorMsRef.current);
+  }, []);
 
   const [serverState, setServerState] = useState<CrashPublicState | null>(null);
   const [useFallback, setUseFallback] = useState(!isSupabaseConfigured());
@@ -139,7 +154,7 @@ export function useCrashGame() {
       fetchCrashStateFromTable(),
       fetchCrashServerNowMs(),
     ]);
-    syncClockFromServer(serverNow);
+    syncClockFromPostgres(serverNow);
     if (table.data) {
       applyServerState(table.data);
       await reloadBets(table.data.round_id);
@@ -147,7 +162,7 @@ export function useCrashGame() {
     }
     if (table.error) setProfileError(table.error);
     return null;
-  }, [applyServerState, reloadBets, syncClockFromServer]);
+  }, [applyServerState, reloadBets, syncClockFromPostgres]);
 
   const bootstrap = useCallback(async () => {
     if (!isSupabaseConfigured() || isDemoMode()) {
@@ -162,7 +177,7 @@ export function useCrashGame() {
       fetchCrashHistory(12),
       fetchCrashServerNowMs(),
     ]);
-    syncClockFromServer(serverNow);
+    syncClockFromPostgres(serverNow);
 
     if (points.length) setCrashHistory(points);
 
@@ -171,7 +186,7 @@ export function useCrashGame() {
       await reloadBets(state.round_id);
     } else if (state) {
       const tick = await runCrashLoopTick();
-      syncClockFromServer(tick.serverTimeMs);
+      syncClockFromPostgres(tick.serverTimeMs);
       if (tick.errors.length) setTickError(tick.errors.join(" · "));
       if (tick.state?.round_id) {
         applyServerState(tick.state);
@@ -186,7 +201,7 @@ export function useCrashGame() {
     }
 
     setIsSyncing(false);
-  }, [applyServerState, reloadBets, refreshServerState, syncClockFromServer]);
+  }, [applyServerState, reloadBets, refreshServerState, syncClockFromPostgres]);
 
   // Session + solde : affichage local immédiat, sync via onAuthStateChange
   useEffect(() => {
@@ -367,7 +382,7 @@ export function useCrashGame() {
         }
 
         const tick = await runCrashLoopTick();
-        syncClockFromServer(tick.serverTimeMs);
+        syncClockFromPostgres(tick.serverTimeMs);
         if (tick.errors.length) {
           setTickError(tick.errors.slice(0, 2).join(" · "));
         } else {
@@ -382,7 +397,25 @@ export function useCrashGame() {
     void runTick();
     const id = setInterval(() => void runTick(), LOOP_TICK_MS);
     return () => clearInterval(id);
-  }, [applyServerState, refreshServerState, syncClockFromServer]);
+  }, [applyServerState, refreshServerState, syncClockFromPostgres]);
+
+  // Horloge Postgres dédiée (indépendante de Vercel et de l'offset ≈ 0 navigateur/Vercel)
+  useEffect(() => {
+    if (!isSupabaseConfigured() || isDemoMode() || useFallback) return;
+
+    let cancelled = false;
+    const resync = async () => {
+      const ms = await fetchCrashServerNowMs();
+      if (!cancelled) syncClockFromPostgres(ms);
+    };
+
+    void resync();
+    const id = setInterval(() => void resync(), POSTGRES_CLOCK_RESYNC_MS);
+    return () => {
+      cancelled = true;
+      clearInterval(id);
+    };
+  }, [useFallback, syncClockFromPostgres]);
 
   // Rafraîchissement visuel 50ms (serveur dérivé ou simulateur local)
   useEffect(() => {
@@ -418,7 +451,9 @@ export function useCrashGame() {
         serverStateRef.current ?? lastKnownStateRef.current;
       if (!state) return;
 
-      const visual = deriveVisualState(state, nowSynced());
+      const visual = deriveVisualState(state, nowSynced(), {
+        postgresClockSynced: postgresClockSyncedRef.current,
+      });
 
       setPhase(visual.phase);
       setMultiplier(visual.multiplier);
@@ -513,11 +548,13 @@ export function useCrashGame() {
       serverState?.round_id ||
       "";
     const serverNow = await fetchCrashServerNowMs();
-    syncClockFromServer(serverNow);
+    syncClockFromPostgres(serverNow);
 
     const liveState = serverStateRef.current ?? lastKnownStateRef.current;
     const cashoutMultiplier = liveState
-      ? deriveVisualState(liveState, nowSynced()).multiplier
+      ? deriveVisualState(liveState, nowSynced(), {
+          postgresClockSynced: postgresClockSyncedRef.current,
+        }).multiplier
       : multiplier;
 
     const { ok, balance: newBal, payout, error } = await cashoutCrash(
@@ -541,7 +578,7 @@ export function useCrashGame() {
     hasCashedOut,
     multiplier,
     nowSynced,
-    syncClockFromServer,
+    syncClockFromPostgres,
     setBalanceTracked,
     reloadBets,
   ]);
@@ -596,7 +633,9 @@ export function useCrashGame() {
       useFallback ||
       (hasLiveRound &&
         serverState !== null &&
-        !deriveVisualState(serverState, nowSynced()).awaitingServerSync),
+        !deriveVisualState(serverState, nowSynced(), {
+          postgresClockSynced: postgresClockSyncedRef.current,
+        }).awaitingServerSync),
     roundBets,
     presence: [],
     activePlayersCount: Math.max(activePlayersCount, roundBets.length > 0 ? roundBets.length : 0),

@@ -20,8 +20,10 @@ export interface CrashVisualState {
  */
 export function deriveVisualState(
   server: CrashPublicState | null,
-  nowMs = Date.now()
+  nowMs = Date.now(),
+  options?: { postgresClockSynced?: boolean }
 ): CrashVisualState {
+  const clockOk = options?.postgresClockSynced !== false;
   if (!server) {
     return {
       phase: "betting",
@@ -44,7 +46,7 @@ export function deriveVisualState(
       bettingSecondsLeft: computeBettingSecondsLeft(server.betting_ends_at, nowMs),
       flyingStartedAt: null,
       crashPoint: null,
-      awaitingServerSync: bettingEnd === null,
+      awaitingServerSync: bettingEnd === null || !clockOk,
     };
   }
 
@@ -56,7 +58,7 @@ export function deriveVisualState(
       bettingSecondsLeft: null,
       flyingStartedAt: server.flying_started_at,
       crashPoint: null,
-      awaitingServerSync: flyingStart === null,
+      awaitingServerSync: flyingStart === null || !clockOk,
     };
   }
 

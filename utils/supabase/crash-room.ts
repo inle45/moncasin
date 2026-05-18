@@ -1,6 +1,6 @@
 import { liveStateRowToPublic } from "@/utils/crash/live-state";
 import { normalizeRoundId } from "@/utils/crash/uuid";
-import { parseCrashState } from "@/utils/crash/parse-state";
+import { parseCrashState, parseCrashStatePayload } from "@/utils/crash/parse-state";
 import { createClient, safeQuery } from "./client";
 import type { Database } from "./database.types";
 import type { CrashBetRow, CrashPublicState } from "@/utils/crash/types";
@@ -13,7 +13,12 @@ import { fetchSupabaseNowMs } from "@/utils/crash/supabase-clock";
 export const CRASH_CHANNEL = "crash:global";
 export { CRASH_BETTING_SECONDS };
 
-type RpcResult<T> = { data: T | null; error: string | null };
+type RpcResult<T> = {
+  data: T | null;
+  error: string | null;
+  /** Horloge Postgres (crash_server_now ou crash_get_state.server_now). */
+  serverNowMs?: number | null;
+};
 
 /** Lecture directe de la table (fiable si le cache RPC PostgREST est en retard). */
 /** Horloge Postgres (crash_server_now) pour synchroniser l'UI client. */
@@ -70,8 +75,13 @@ export async function fetchCrashState(): Promise<RpcResult<CrashPublicState>> {
   };
   if (error) return { data: null, error: error.message };
 
-  const state = parseCrashState(data);
-  return state ? { data: state, error: null } : fromTable;
+  const payload = parseCrashStatePayload(data);
+  if (payload.state) {
+    const serverNowMs =
+      payload.serverNowMs ?? (await fetchCrashServerNowMs());
+    return { data: payload.state, error: null, serverNowMs };
+  }
+  return fromTable;
 }
 
 export async function advanceCrashTick(): Promise<RpcResult<CrashPublicState>> {
@@ -94,8 +104,12 @@ export async function advanceCrashTick(): Promise<RpcResult<CrashPublicState>> {
     return { data: null, error: error.message };
   }
 
-  const parsed = parseCrashState(data);
-  if (parsed) return { data: parsed, error: null };
+  const payload = parseCrashStatePayload(data);
+  if (payload.state) {
+    const serverNowMs =
+      payload.serverNowMs ?? (await fetchCrashServerNowMs());
+    return { data: payload.state, error: null, serverNowMs };
+  }
 
   return { data: null, error: "Réponse crash_advance_tick invalide" };
 }
