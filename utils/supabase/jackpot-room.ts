@@ -73,6 +73,15 @@ export type CompleteJackpotRoundResult = {
   round: JackpotRound | null;
   error: string | null;
   sqlMessage?: string;
+  debug?: {
+    step: string;
+    source?: "complete_jackpot_round" | "jackpot_advance_tick";
+    postgrestCode?: string;
+    postgrestMessage?: string;
+    postgrestDetails?: string;
+    postgrestHint?: string;
+    rawData?: unknown;
+  };
 };
 
 /** Manche en cours (aligné sur jackpot_active_round_id : counting > rolling > waiting). */
@@ -459,50 +468,205 @@ export async function completeJackpotRound(
   const params = { p_round_id: roundId };
   logJackpotRpc("complete_jackpot_round REQUEST", { params });
 
+  let completeFailure: CompleteJackpotRoundResult | null = null;
+
   try {
     const { data: wrapped, timedOut, error: timeoutErr } = await safeQuery(
       supabase.rpc("complete_jackpot_round", params)
     );
 
-    if (!timedOut && !timeoutErr && wrapped) {
+    if (timedOut || timeoutErr) {
+      const msg = timedOut
+        ? "Connexion expirée (RPC complete_jackpot_round)"
+        : String(timeoutErr);
+      console.error("ERREUR CRITIQUE JACKPOT (complete_jackpot_round):", {
+        timedOut,
+        timeoutErr,
+      });
+      completeFailure = {
+        ok: false,
+        round: null,
+        error: msg,
+        sqlMessage: msg,
+        debug: { step: "complete_timeout", source: "complete_jackpot_round" },
+      };
+    } else if (!wrapped) {
+      completeFailure = {
+        ok: false,
+        round: null,
+        error: "Réponse RPC complete_jackpot_round vide",
+        sqlMessage: "Réponse RPC complete_jackpot_round vide",
+        debug: { step: "complete_empty_wrap", source: "complete_jackpot_round" },
+      };
+    } else {
       const { data: rawData, error: rpcError } = wrapped as {
         data: unknown;
         error: PostgrestErrorShape | null;
       };
 
+      logJackpotRpc("complete_jackpot_round RAW RESPONSE", { rawData, rpcError });
+
       if (rpcError && !isMissingRpcError(rpcError)) {
         const msg = formatPostgrestError(rpcError);
-        return { ok: false, round: null, error: msg, sqlMessage: msg };
+        console.error("ERREUR CRITIQUE JACKPOT (complete_jackpot_round):", rpcError);
+        return {
+          ok: false,
+          round: null,
+          error: msg,
+          sqlMessage: msg,
+          debug: {
+            step: "complete_postgrest_error",
+            source: "complete_jackpot_round",
+            postgrestCode: rpcError.code,
+            postgrestMessage: rpcError.message,
+            postgrestDetails: rpcError.details,
+            postgrestHint: rpcError.hint,
+            rawData,
+          },
+        };
       }
 
       if (!rpcError && rawData != null) {
         const parsed = parseJackpotRpcPayload(rawData);
-        if (parsed.ok && parsed.round) {
-          return { ok: true, round: parsed.round, error: null };
-        }
+
         if (!parsed.ok) {
-          const sqlMessage = parsed.error ?? "Clôture refusée";
-          return { ok: false, round: null, error: sqlMessage, sqlMessage };
+          const sqlMessage = parsed.error ?? "Clôture refusée par le serveur";
+          console.error("ERREUR CRITIQUE JACKPOT (complete ok:false):", {
+            sqlMessage,
+            rawData,
+          });
+          return {
+            ok: false,
+            round: null,
+            error: sqlMessage,
+            sqlMessage,
+            debug: {
+              step: "complete_rpc_ok_false",
+              source: "complete_jackpot_round",
+              rawData,
+              postgrestMessage: sqlMessage,
+            },
+          };
         }
+
+        if (parsed.round) {
+          if (parsed.round.status === "ended" || parsed.round.status === "waiting") {
+            return { ok: true, round: parsed.round, error: null };
+          }
+          const sqlMessage = `complete_jackpot_round: statut « ${parsed.round.status} » inattendu (attendu ended)`;
+          console.error("ERREUR CRITIQUE JACKPOT:", { sqlMessage, rawData });
+          return {
+            ok: false,
+            round: parsed.round,
+            error: sqlMessage,
+            sqlMessage,
+            debug: {
+              step: "complete_unexpected_status",
+              source: "complete_jackpot_round",
+              rawData,
+              postgrestMessage: sqlMessage,
+            },
+          };
+        }
+
+        const sqlMessage =
+          "complete_jackpot_round ok:true mais champ round absent ou illisible";
+        console.error("ERREUR CRITIQUE JACKPOT:", { sqlMessage, rawData });
+        completeFailure = {
+          ok: false,
+          round: null,
+          error: sqlMessage,
+          sqlMessage,
+          debug: {
+            step: "complete_missing_round",
+            source: "complete_jackpot_round",
+            rawData,
+            postgrestMessage: sqlMessage,
+          },
+        };
       }
     }
   } catch (err) {
-    logJackpotRpc("complete_jackpot_round exception", { err });
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error("ERREUR CRITIQUE JACKPOT (complete_jackpot_round exception):", err);
+    completeFailure = {
+      ok: false,
+      round: null,
+      error: `Exception complete_jackpot_round: ${msg}`,
+      sqlMessage: msg,
+      debug: { step: "complete_exception", source: "complete_jackpot_round" },
+    };
   }
 
-  logJackpotRpc("complete_jackpot_round fallback advanceJackpotTick", { roundId });
+  logJackpotRpc("complete_jackpot_round fallback jackpot_advance_tick", {
+    roundId,
+    priorFailure: completeFailure?.sqlMessage,
+  });
+
   const tick = await advanceJackpotTick();
+
   if (tick.error && !tick.skipped) {
-    return { ok: false, round: tick.data, error: tick.error };
-  }
-  if (tick.data) {
-    return { ok: true, round: tick.data, error: null };
+    const msg = `[jackpot_advance_tick] ${tick.error}`;
+    console.error("ERREUR CRITIQUE JACKPOT (advance fallback):", tick.error);
+    const prior = completeFailure?.sqlMessage;
+    return {
+      ok: false,
+      round: tick.data,
+      error: prior ? `${prior} · Puis ${msg}` : msg,
+      sqlMessage: prior ? `${prior} · Puis ${msg}` : msg,
+      debug: {
+        step: "advance_tick_error",
+        source: "jackpot_advance_tick",
+        postgrestMessage: tick.error,
+      },
+    };
   }
 
+  if (tick.skipped) {
+    const msg = completeFailure?.sqlMessage
+      ? `${completeFailure.sqlMessage} · jackpot_advance_tick indisponible`
+      : "jackpot_advance_tick indisponible (fallback clôture)";
+    return {
+      ok: false,
+      round: completeFailure?.round ?? null,
+      error: msg,
+      sqlMessage: msg,
+      debug: completeFailure?.debug ?? {
+        step: "advance_skipped",
+        source: "jackpot_advance_tick",
+      },
+    };
+  }
+
+  if (tick.data) {
+    if (tick.data.status === "ended" || tick.data.status === "waiting") {
+      return { ok: true, round: tick.data, error: null };
+    }
+    const msg = `[jackpot_advance_tick] statut « ${tick.data.status} » (attendu ended après rolling)`;
+    const prior = completeFailure?.sqlMessage;
+    return {
+      ok: false,
+      round: tick.data,
+      error: prior ? `${prior} · ${msg}` : msg,
+      sqlMessage: prior ? `${prior} · ${msg}` : msg,
+      debug: {
+        step: "advance_unexpected_status",
+        source: "jackpot_advance_tick",
+        postgrestMessage: msg,
+      },
+    };
+  }
+
+  const msg = completeFailure?.sqlMessage
+    ? `${completeFailure.sqlMessage} · advance_tick sans données`
+    : "Impossible de clôturer la manche (complete_jackpot_round + advance_tick vides)";
+  console.error("ERREUR CRITIQUE JACKPOT (complete total failure):", msg);
   return {
     ok: false,
-    round: null,
-    error: "Impossible de clôturer la manche (advance_tick vide)",
+    round: completeFailure?.round ?? null,
+    error: msg,
+    sqlMessage: msg,
+    debug: completeFailure?.debug ?? { step: "complete_and_advance_empty" },
   };
 }
 

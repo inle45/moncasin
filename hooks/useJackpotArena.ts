@@ -102,6 +102,7 @@ export function useJackpotArena() {
   const triggeringRollRef = useRef(false);
   const stuckRollSinceRef = useRef<number | null>(null);
   const lastTriggerErrorRef = useRef<string | null>(null);
+  const lastCompleteErrorRef = useRef<string | null>(null);
   const completingRoundRef = useRef(false);
   const finalizeScheduledRef = useRef<string | null>(null);
   const rollingWatchdogSinceRef = useRef<number | null>(null);
@@ -449,12 +450,24 @@ export function useJackpotArena() {
       const result = await completeJackpotRound(r.id);
 
       if (!result.ok) {
-        const errMsg = result.sqlMessage ?? result.error ?? "Clôture impossible";
+        const errMsg = formatRollError(
+          result.error,
+          result.sqlMessage,
+          result.debug
+        );
+        lastCompleteErrorRef.current = errMsg;
         lastTriggerErrorRef.current = errMsg;
-        setCriticalError(errMsg);
-        console.error("ERREUR CRITIQUE JACKPOT (complete):", result);
+        setCriticalError(`Clôture — ${errMsg}`);
+        console.error("ERREUR CRITIQUE JACKPOT (complete):", {
+          error: result.error,
+          sqlMessage: result.sqlMessage,
+          debug: result.debug,
+          roundId: r.id,
+        });
         return;
       }
+
+      lastCompleteErrorRef.current = null;
 
       if (result.round) {
         applyRound(result.round);
@@ -512,9 +525,16 @@ export function useJackpotArena() {
     }, delay);
 
     const watchdogTimer = window.setTimeout(() => {
-      if (roundRef.current?.status === "rolling") {
-        void completeRoundAfterRoll();
+      if (roundRef.current?.status !== "rolling") return;
+
+      if (lastCompleteErrorRef.current) {
+        setCriticalError(`Clôture bloquée — ${lastCompleteErrorRef.current}`);
+      } else {
+        setCriticalError(
+          "Clôture en attente — nouvelle tentative (rolling > 10 s)…"
+        );
       }
+      void completeRoundAfterRoll();
     }, JACKPOT_STUCK_ROLLING_MS);
 
     return () => {
@@ -546,15 +566,21 @@ export function useJackpotArena() {
     }
 
     const id = window.setTimeout(() => {
-      if (roundRef.current?.status !== "counting") return;
-      if (!isCountdownExpired(roundRef.current, computeCountdownSeconds(roundRef.current))) {
+      const current = roundRef.current;
+      if (!current || current.status !== "counting") return;
+      if (!isCountdownExpired(current, computeCountdownSeconds(current))) {
         return;
       }
 
+      const detail =
+        lastTriggerErrorRef.current ??
+        lastCompleteErrorRef.current ??
+        null;
+
       setCriticalError(
-        lastTriggerErrorRef.current
-          ? `Tirage bloqué — ${lastTriggerErrorRef.current}`
-          : "Tirage en attente — resynchronisation de l'arène (aucun détail RPC reçu)…"
+        detail
+          ? `Tirage bloqué — ${detail}`
+          : "Tirage en attente — resynchronisation (aucune réponse trigger_jackpot_roll)…"
       );
       rollTriggeredForRoundRef.current = null;
       void refreshState();
