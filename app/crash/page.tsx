@@ -32,6 +32,7 @@ export default function CrashPage() {
     roundNumber,
     isDemoMode,
     tickError,
+    clockDebug,
     placeBet,
     cashout,
     changeBet,
@@ -61,6 +62,17 @@ export default function CrashPage() {
           role="alert"
         >
           Sync manche : {tickError}
+        </p>
+      )}
+
+      {clockDebug && !isDemoMode && (
+        <p
+          className="mx-4 mt-1 font-mono text-[10px] leading-relaxed text-white/35"
+          aria-hidden
+        >
+          horloge offset {clockDebug.offsetMs}ms · dérive{" "}
+          {clockDebug.driftMs != null ? `${clockDebug.driftMs}ms` : "—"} · sync{" "}
+          {clockDebug.syncedNowMs} vs pg {clockDebug.postgresNowMs ?? "?"}
         </p>
       )}
 

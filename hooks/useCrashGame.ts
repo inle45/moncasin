@@ -38,6 +38,15 @@ import { fetchProfile } from "@/utils/supabase/profiles";
 
 export type { CrashPhase };
 
+export interface CrashClockDebug {
+  offsetMs: number;
+  /** syncedNow − dernier server_now Postgres reçu */
+  driftMs: number | null;
+  syncedNowMs: number;
+  postgresNowMs: number | null;
+  clientNowMs: number;
+}
+
 /** Boucle multijoueur : crash_advance_tick idempotent côté client (pas de cron Vercel). */
 const LOOP_TICK_MS = 500;
 const VISUAL_TICK_MS = 50;
@@ -60,6 +69,30 @@ export function useCrashGame() {
   const clientAnchorMsRef = useRef(0);
   const clockOffsetRef = useRef(0);
   const postgresClockSyncedRef = useRef(false);
+  const lastPostgresNowMsRef = useRef<number | null>(null);
+  const lastClockLogAtRef = useRef(0);
+
+  const [clockDebug, setClockDebug] = useState<CrashClockDebug | null>(null);
+
+  const publishClockDebug = useCallback(() => {
+    const clientNowMs = Date.now();
+    const offsetMs = clockOffsetRef.current;
+    const syncedNowMs = clientNowMs + offsetMs;
+    const postgresNowMs = lastPostgresNowMsRef.current;
+    const driftMs =
+      postgresNowMs != null ? syncedNowMs - postgresNowMs : null;
+
+    const payload: CrashClockDebug = {
+      offsetMs,
+      driftMs,
+      syncedNowMs,
+      postgresNowMs,
+      clientNowMs,
+    };
+
+    setClockDebug(payload);
+    console.log("[MonCasin crash clock]", payload);
+  }, []);
 
   const syncClockFromPostgres = useCallback(
     (serverTimeMs: number | null | undefined) => {
@@ -67,10 +100,12 @@ export function useCrashGame() {
       const clientNow = Date.now();
       postgresAnchorMsRef.current = serverTimeMs;
       clientAnchorMsRef.current = clientNow;
+      lastPostgresNowMsRef.current = serverTimeMs;
       clockOffsetRef.current = computeClockOffsetMs(serverTimeMs, clientNow);
       postgresClockSyncedRef.current = true;
+      publishClockDebug();
     },
-    []
+    [publishClockDebug]
   );
 
   const nowSynced = useCallback(() => {
@@ -78,6 +113,14 @@ export function useCrashGame() {
     if (anchor == null) return Date.now();
     return postgresNowFromAnchor(anchor, clientAnchorMsRef.current);
   }, []);
+
+  const visualStateOptions = useCallback(
+    () => ({
+      postgresClockSynced: postgresClockSyncedRef.current,
+      offsetMs: clockOffsetRef.current,
+    }),
+    []
+  );
 
   const [serverState, setServerState] = useState<CrashPublicState | null>(null);
   const [useFallback, setUseFallback] = useState(!isSupabaseConfigured());
@@ -451,9 +494,12 @@ export function useCrashGame() {
         serverStateRef.current ?? lastKnownStateRef.current;
       if (!state) return;
 
-      const visual = deriveVisualState(state, nowSynced(), {
-        postgresClockSynced: postgresClockSyncedRef.current,
-      });
+      if (Date.now() - lastClockLogAtRef.current >= 1000) {
+        lastClockLogAtRef.current = Date.now();
+        publishClockDebug();
+      }
+
+      const visual = deriveVisualState(state, nowSynced(), visualStateOptions());
 
       setPhase(visual.phase);
       setMultiplier(visual.multiplier);
@@ -482,7 +528,7 @@ export function useCrashGame() {
     }, VISUAL_TICK_MS);
 
     return () => clearInterval(id);
-  }, [useFallback, nowSynced]);
+  }, [useFallback, nowSynced, visualStateOptions, publishClockDebug]);
 
   const placeBet = useCallback(async () => {
     if (phase !== "betting" || (bettingSecondsLeft ?? 0) <= 0) return;
@@ -552,9 +598,8 @@ export function useCrashGame() {
 
     const liveState = serverStateRef.current ?? lastKnownStateRef.current;
     const cashoutMultiplier = liveState
-      ? deriveVisualState(liveState, nowSynced(), {
-          postgresClockSynced: postgresClockSyncedRef.current,
-        }).multiplier
+      ? deriveVisualState(liveState, nowSynced(), visualStateOptions())
+          .multiplier
       : multiplier;
 
     const { ok, balance: newBal, payout, error } = await cashoutCrash(
@@ -633,9 +678,8 @@ export function useCrashGame() {
       useFallback ||
       (hasLiveRound &&
         serverState !== null &&
-        !deriveVisualState(serverState, nowSynced(), {
-          postgresClockSynced: postgresClockSyncedRef.current,
-        }).awaitingServerSync),
+        !deriveVisualState(serverState, nowSynced(), visualStateOptions())
+          .awaitingServerSync),
     roundBets,
     presence: [],
     activePlayersCount: Math.max(activePlayersCount, roundBets.length > 0 ? roundBets.length : 0),
@@ -647,6 +691,7 @@ export function useCrashGame() {
     isSyncing,
     profileError,
     tickError,
+    clockDebug,
     isDemoMode: demo,
     useFallback,
     placeBet,

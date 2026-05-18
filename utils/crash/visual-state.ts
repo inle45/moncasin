@@ -1,5 +1,5 @@
 import { computeBettingSecondsLeft, parseIsoMs } from "@/utils/crash/datetime";
-import { multiplierAtElapsedMs } from "@/utils/crash/engine";
+import { multiplierAtSecondsElapsed } from "@/utils/crash/engine";
 import type { CrashPhase, CrashPublicState } from "@/utils/crash/types";
 
 const CRASH_DISPLAY_MS = 3000;
@@ -14,16 +14,25 @@ export interface CrashVisualState {
   awaitingServerSync: boolean;
 }
 
+export interface DeriveVisualStateOptions {
+  postgresClockSynced?: boolean;
+  /** offsetMs = heure Postgres − Date.now() au moment de la sync. */
+  offsetMs?: number;
+}
+
 /**
  * Dérive l'affichage à partir des timestamps Supabase.
- * `nowMs` doit être l'heure Supabase (Date.now() + offset), pas l'horloge brute du navigateur.
+ * Vol : uniquement si `flying_started_at` est présent ;
+ * seconds_elapsed = (Date.now() + offsetMs − flying_started_at) / 1000
  */
 export function deriveVisualState(
   server: CrashPublicState | null,
   nowMs = Date.now(),
-  options?: { postgresClockSynced?: boolean }
+  options?: DeriveVisualStateOptions
 ): CrashVisualState {
   const clockOk = options?.postgresClockSynced !== false;
+  const offsetMs = options?.offsetMs ?? nowMs - Date.now();
+
   if (!server) {
     return {
       phase: "betting",
@@ -36,14 +45,17 @@ export function deriveVisualState(
   }
 
   const bettingEnd = parseIsoMs(server.betting_ends_at);
-  const flyingStart = parseIsoMs(server.flying_started_at);
   const crashedAt = parseIsoMs(server.crashed_at);
+  const syncedNowMs = Date.now() + offsetMs;
 
   if (server.phase === "betting") {
     return {
       phase: "betting",
       multiplier: 1,
-      bettingSecondsLeft: computeBettingSecondsLeft(server.betting_ends_at, nowMs),
+      bettingSecondsLeft: computeBettingSecondsLeft(
+        server.betting_ends_at,
+        syncedNowMs
+      ),
       flyingStartedAt: null,
       crashPoint: null,
       awaitingServerSync: bettingEnd === null || !clockOk,
@@ -51,14 +63,41 @@ export function deriveVisualState(
   }
 
   if (server.phase === "flying") {
-    const start = flyingStart ?? bettingEnd ?? nowMs;
+    if (!server.flying_started_at) {
+      return {
+        phase: "flying",
+        multiplier: 1,
+        bettingSecondsLeft: null,
+        flyingStartedAt: null,
+        crashPoint: null,
+        awaitingServerSync: true,
+      };
+    }
+
+    const flyingStartMs = new Date(server.flying_started_at).getTime();
+    if (!Number.isFinite(flyingStartMs)) {
+      return {
+        phase: "flying",
+        multiplier: 1,
+        bettingSecondsLeft: null,
+        flyingStartedAt: server.flying_started_at,
+        crashPoint: null,
+        awaitingServerSync: true,
+      };
+    }
+
+    const secondsElapsed = Math.max(
+      0,
+      (Date.now() + offsetMs - flyingStartMs) / 1000
+    );
+
     return {
       phase: "flying",
-      multiplier: multiplierAtElapsedMs(Math.max(0, nowMs - start)),
+      multiplier: multiplierAtSecondsElapsed(secondsElapsed),
       bettingSecondsLeft: null,
       flyingStartedAt: server.flying_started_at,
       crashPoint: null,
-      awaitingServerSync: flyingStart === null || !clockOk,
+      awaitingServerSync: !clockOk,
     };
   }
 

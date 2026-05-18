@@ -77,7 +77,10 @@ returns numeric
 language sql
 stable
 as $$
-  select floor(exp(0.12 * extract(epoch from (now() - p_started_at))) * 100) / 100;
+  select round(
+    (power(1.06, greatest(0, extract(epoch from (clock_timestamp() - p_started_at))))::numeric)
+    * 100
+  ) / 100;
 $$;
 
 -- =============================================================================
